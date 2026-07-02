@@ -1,0 +1,12 @@
+{
+  "java.import.exclusions": [
+    "**/node_modules/**",
+    "**/.git/**"
+  ],
+  "java.project.referencedLibraries": [],
+  "java.autobuild.enabled": false,
+  "gradle.projectRoots": [
+    "android"
+  ],
+  "gradle.nestedProjects": false
+}
