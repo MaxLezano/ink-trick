@@ -353,12 +353,19 @@ export default function DashboardScreen({ navigation }: Props) {
           )}
 
           {/* Barra de progreso de lectura discreta en el fondo de la portada */}
-          {percentage > 0 && preparingBookId !== item.id && (
+          {percentage > 0 && percentage < 100 && preparingBookId !== item.id && (
             <View style={styles.coverProgressOverlay}>
               <View style={styles.coverProgressBarBackground}>
                 <View style={[styles.coverProgressBar, { width: `${percentage}%` }]} />
               </View>
               <Text style={styles.coverProgressText}>{percentage}%</Text>
+            </View>
+          )}
+
+          {/* Banda de LEÍDO */}
+          {percentage === 100 && preparingBookId !== item.id && (
+            <View style={styles.readBanner}>
+              <Text style={styles.readBannerText}>LEÍDO</Text>
             </View>
           )}
 
@@ -552,7 +559,13 @@ export default function DashboardScreen({ navigation }: Props) {
                   {(() => {
                     const bookProgress = progress[recentBooks[0].id];
                     const percentage = bookProgress ? Math.round(bookProgress.percentage) : 0;
-                    if (percentage > 0) {
+                    if (percentage === 100) {
+                      return (
+                        <View style={styles.readBanner}>
+                          <Text style={styles.readBannerText}>LEÍDO</Text>
+                        </View>
+                      );
+                    } else if (percentage > 0) {
                       return (
                         <View style={styles.recentCoverProgressOverlay}>
                           <View style={styles.recentCoverProgressBarBackground}>
@@ -576,9 +589,17 @@ export default function DashboardScreen({ navigation }: Props) {
                   {(() => {
                     const bookProgress = progress[recentBooks[0].id];
                     if (bookProgress) {
+                      const pct = Math.round(bookProgress.percentage);
+                      if (pct === 100) {
+                        return (
+                          <Text style={styles.recentProgressMeta}>
+                            Lectura finalizada
+                          </Text>
+                        );
+                      }
                       return (
                         <Text style={styles.recentProgressMeta}>
-                          Página {bookProgress.currentPage + 1} de {bookProgress.totalPages} ({Math.round(bookProgress.percentage)}%)
+                          Página {bookProgress.currentPage + 1} de {bookProgress.totalPages} ({pct}%)
                         </Text>
                       );
                     }
@@ -1540,5 +1561,23 @@ const styles = StyleSheet.create({
   modalSectionLabel: {
     fontSize: 11,
     fontWeight: '700',
+  },
+  readBanner: {
+    position: 'absolute',
+    top: 12,
+    right: -25,
+    backgroundColor: '#0A0A0A',
+    paddingVertical: 3,
+    paddingHorizontal: 28,
+    transform: [{ rotate: '45deg' }],
+    zIndex: 5,
+    elevation: 3,
+  },
+  readBannerText: {
+    color: '#F0F0F0',
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 1,
+    textAlign: 'center',
   },
 });

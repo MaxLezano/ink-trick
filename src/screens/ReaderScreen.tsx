@@ -203,11 +203,12 @@ export default function ReaderScreen({ navigation, route }: Props) {
       const total = totalPagesRef.current;
 
       if (bId && total > 0) {
+        const pct = total > 1 ? (page / (total - 1)) * 100 : 100;
         const progress: ReadingProgress = {
           bookId: bId,
           currentPage: page,
           totalPages: total,
-          percentage: (page / total) * 100,
+          percentage: Math.min(100, Math.max(0, pct)),
           lastReadAt: Date.now(),
         };
         StorageService.saveProgress(progress).then(() => {
@@ -231,11 +232,12 @@ export default function ReaderScreen({ navigation, route }: Props) {
     const page = currentPageRef.current;
     
     if (bId) {
+      const pct = numberOfPages > 1 ? (page / (numberOfPages - 1)) * 100 : 100;
       const progress: ReadingProgress = {
         bookId: bId,
         currentPage: page,
         totalPages: numberOfPages,
-        percentage: numberOfPages > 0 ? (page / numberOfPages) * 100 : 0,
+        percentage: Math.min(100, Math.max(0, pct)),
         lastReadAt: Date.now(),
       };
       StorageService.saveProgress(progress);
@@ -252,11 +254,12 @@ export default function ReaderScreen({ navigation, route }: Props) {
     
     // Guardar progreso en segundo plano inmediatamente
     if (bId && total > 0) {
+      const pct = total > 1 ? (newPage / (total - 1)) * 100 : 100;
       const progress: ReadingProgress = {
         bookId: bId,
         currentPage: newPage,
         totalPages: total,
-        percentage: (newPage / total) * 100,
+        percentage: Math.min(100, Math.max(0, pct)),
         lastReadAt: Date.now(),
       };
       StorageService.saveProgress(progress);
