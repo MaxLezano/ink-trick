@@ -23,6 +23,7 @@ import {
 } from 'react-native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import * as FileSystem from 'expo-file-system/legacy';
+import PdfThumbnail from 'react-native-pdf-thumbnail';
 import { RootStackParamList, BookFile } from '../utils/types';
 import { useLibraryStore } from '../store/libraryStore';
 import { COLORS, GRID_COLUMNS_MOBILE, GRID_COLUMNS_TABLET, TABLET_BREAKPOINT } from '../utils/constants';
@@ -199,37 +200,40 @@ export default function DashboardScreen({ navigation }: Props) {
         toggleBookSelection(book.id);
       } else {
         await updateLastOpened(book.id);
+        setPreparingBookId(book.id);
+        setPreparingTitle(book.title);
+
         const path = book.filePath;
-        
-        if (path.startsWith('content://')) {
-          setPreparingBookId(book.id);
-          setPreparingTitle(book.title);
-          
-          try {
-            const safeFileName = `${book.id}.pdf`;
-            const tempUri = `${FileSystem.cacheDirectory}${safeFileName}`;
-            
-            console.log('[DashboardScreen] Pre-loading Content URI to cache:', tempUri);
-            
-            const info = await FileSystem.getInfoAsync(tempUri);
-            if (!info.exists) {
-              await FileSystem.copyAsync({
-                from: path,
-                to: tempUri,
-              });
-            }
-            
-            navigation.navigate('Reader', { bookId: book.id, preparedPath: tempUri });
-          } catch (err) {
-            console.error('[DashboardScreen] Error pre-loading book cache:', err);
-            // Fallback: navegar con el original
-            navigation.navigate('Reader', { bookId: book.id, preparedPath: path });
-          } finally {
-            setPreparingBookId(null);
-            setPreparingTitle(null);
+        let finalPath = path;
+
+        try {
+          // Pre-copiamos el libro al directorio de caché seguro de la app si es necesario
+          const safeFileName = `${book.id}.pdf`;
+          const tempUri = `${FileSystem.cacheDirectory}${safeFileName}`;
+
+          const info = await FileSystem.getInfoAsync(tempUri);
+          if (!info.exists) {
+            console.log('[DashboardScreen] Pre-loading book to cache:', tempUri);
+            await FileSystem.copyAsync({
+              from: path,
+              to: tempUri,
+            });
           }
-        } else {
+          finalPath = tempUri;
+
+          // Pre-extraer conteo nativo e inicializar la caché de lectura
+          const cleanPath = Platform.OS === 'android' ? tempUri.replace('file://', '') : tempUri;
+          try {
+            await (PdfThumbnail as any).getPageCount(cleanPath);
+          } catch (e) {}
+
+          navigation.navigate('Reader', { bookId: book.id, preparedPath: finalPath });
+        } catch (err) {
+          console.error('[DashboardScreen] Error pre-loading book cache:', err);
           navigation.navigate('Reader', { bookId: book.id, preparedPath: path });
+        } finally {
+          setPreparingBookId(null);
+          setPreparingTitle(null);
         }
       }
     },
@@ -577,6 +581,14 @@ export default function DashboardScreen({ navigation }: Props) {
                     }
                     return null;
                   })()}
+
+                  {/* Banda inferior flotante "Abriendo..." en la portada reciente del lobby */}
+                  {preparingBookId === recentBooks[0].id && (
+                    <View style={styles.cardLoadingOverlay}>
+                      <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 6 }} />
+                      <Text style={styles.cardLoadingText}>Abriendo...</Text>
+                    </View>
+                  )}
                 </View>
 
                 {/* Columna Derecha: Detalles del libro */}

@@ -10,6 +10,10 @@
       "supportsTablet": true
     },
     "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#2A1341"
+      },
       "predictiveBackGestureEnabled": false,
       "package": "com.lezma.InkTrick"
     },

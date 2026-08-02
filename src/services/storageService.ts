@@ -4,7 +4,7 @@
  * Usa expo-file-system para leer/escribir archivos JSON en el directorio de documentos.
  */
 import { File, Directory, Paths } from 'expo-file-system';
-import { BookFile, ReadingProgress } from '../utils/types';
+import { BookFile, ReadingProgress, BookSettings } from '../utils/types';
 
 export interface ScannedFolder {
   uri: string;
@@ -18,12 +18,16 @@ interface StorageData {
   lastScanTimestamp?: number;
   lastFolderUri?: string;
   scannedFolders?: ScannedFolder[];
+  bookSettings?: Record<string, BookSettings>;
 }
 
 const DATA_DIR = new Directory(Paths.document, 'inktrick');
 const DATA_FILE = new File(DATA_DIR, 'data.json');
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
+
+let cachedData: StorageData | null = null;
+let saveProgressTimer: NodeJS.Timeout | null = null;
 
 /**
  * Asegura que el directorio de datos exista.
@@ -39,29 +43,36 @@ async function ensureDataDir(): Promise<void> {
 }
 
 /**
- * Lee los datos persistidos del archivo JSON.
+ * Lee los datos persistidos del archivo JSON usando caché en memoria.
  */
 async function readData(): Promise<StorageData> {
+  if (cachedData) {
+    return cachedData;
+  }
   try {
     await ensureDataDir();
     if (!DATA_FILE.exists) {
-      return getDefaultData();
+      cachedData = getDefaultData();
+      return cachedData;
     }
     const content = await DATA_FILE.text();
-    return JSON.parse(content) as StorageData;
+    cachedData = JSON.parse(content) as StorageData;
+    return cachedData;
   } catch (error) {
     console.warn('[StorageService] Error reading data, returning defaults:', error);
-    return getDefaultData();
+    cachedData = getDefaultData();
+    return cachedData;
   }
 }
 
 /**
- * Escribe datos al archivo JSON.
+ * Escribe datos al archivo JSON de forma compacta.
  */
 async function writeData(data: StorageData): Promise<void> {
+  cachedData = data;
   try {
     await ensureDataDir();
-    await DATA_FILE.write(JSON.stringify(data, null, 2));
+    await DATA_FILE.write(JSON.stringify(data));
   } catch (error) {
     console.error('[StorageService] Error writing data:', error);
   }
@@ -74,6 +85,7 @@ function getDefaultData(): StorageData {
   return {
     library: [],
     progress: {},
+    bookSettings: {},
   };
 }
 
@@ -105,12 +117,38 @@ export async function getProgress(bookId: string): Promise<ReadingProgress | nul
 }
 
 /**
- * Guarda el progreso de lectura.
+ * Guarda el progreso de lectura con debounce para no saturar disco en scroll continuo.
  */
-export async function saveProgress(progress: ReadingProgress): Promise<void> {
+export async function saveProgress(progress: ReadingProgress, immediate: boolean = false): Promise<void> {
   const data = await readData();
   data.progress[progress.bookId] = progress;
-  await writeData(data);
+
+  if (immediate) {
+    if (saveProgressTimer) {
+      clearTimeout(saveProgressTimer);
+      saveProgressTimer = null;
+    }
+    await writeData(data);
+  } else {
+    if (saveProgressTimer) {
+      clearTimeout(saveProgressTimer);
+    }
+    saveProgressTimer = setTimeout(() => {
+      saveProgressTimer = null;
+      writeData(data);
+    }, 2500);
+  }
+}
+
+/**
+ * Fuerza la descarga a disco de cualquier guardado de progreso pendiente.
+ */
+export async function flushProgress(): Promise<void> {
+  if (saveProgressTimer && cachedData) {
+    clearTimeout(saveProgressTimer);
+    saveProgressTimer = null;
+    await writeData(cachedData);
+  }
 }
 
 /**
@@ -194,5 +232,37 @@ export async function saveScannedFolders(folders: ScannedFolder[]): Promise<void
   // Sincroniza la propiedad lastFolderUri antigua con el primer folder habilitado
   const firstEnabled = folders.find(f => f.enabled);
   data.lastFolderUri = firstEnabled ? firstEnabled.uri : '';
+  await writeData(data);
+}
+
+export const DEFAULT_BOOK_SETTINGS: BookSettings = {
+  isHorizontal: false,
+  usePaging: false,
+  fitMode: 0,
+  enableDoubleTapZoom: false,
+  brightnessDimmer: 0,
+  isRTL: false,
+};
+
+/**
+ * Obtiene la configuración de lectura de un libro.
+ */
+export async function getBookSettings(bookId: string): Promise<BookSettings> {
+  const data = await readData();
+  if (!data.bookSettings) {
+    data.bookSettings = {};
+  }
+  return data.bookSettings[bookId] ?? { ...DEFAULT_BOOK_SETTINGS };
+}
+
+/**
+ * Guarda la configuración de lectura de un libro.
+ */
+export async function saveBookSettings(bookId: string, settings: BookSettings): Promise<void> {
+  const data = await readData();
+  if (!data.bookSettings) {
+    data.bookSettings = {};
+  }
+  data.bookSettings[bookId] = settings;
   await writeData(data);
 }

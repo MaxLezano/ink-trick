@@ -4,7 +4,7 @@
  * Sin paginación forzada, sin overlay de controles, sin temas.
  * Solo lectura continua y botón de volver.
  */
-import React, { useEffect, useCallback, useState, useRef } from 'react';
+import React, { useEffect, useCallback, useState, useRef, useMemo } from 'react';
 import {
   View,
   Text,
@@ -19,16 +19,19 @@ import {
   TouchableWithoutFeedback,
   TextInput,
   useWindowDimensions,
+  FlatList,
+  Image,
 } from 'react-native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RouteProp } from '@react-navigation/native';
-import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
+import PdfThumbnail from 'react-native-pdf-thumbnail';
 import { RootStackParamList } from '../utils/types';
 import { COLORS } from '../utils/constants';
 import { useLibraryStore } from '../store/libraryStore';
 import * as StorageService from '../services/storageService';
-import { ReadingProgress } from '../utils/types';
+import { ReadingProgress, BookSettings } from '../utils/types';
+import { PdfJsViewer } from '../components/PdfJsViewer';
 
 let PdfComponent: any = null;
 let isPdfSupported = false;
@@ -40,6 +43,223 @@ try {
 } catch (error) {
   console.log('[ReaderScreen] react-native-pdf not supported in this environment.');
 }
+
+interface PageImageInfo {
+  uri: string;
+  width: number;
+  height: number;
+}
+
+interface ContinuousManhwaReaderProps {
+  pdfUri: string;
+  totalPages: number;
+  initialPage: number;
+  onPageChanged: (pageIndex: number) => void;
+  onToggleMenu: () => void;
+  screenWidth: number;
+}
+
+const ContinuousManhwaReader: React.FC<ContinuousManhwaReaderProps> = React.memo(({
+  pdfUri,
+  totalPages,
+  initialPage,
+  onPageChanged,
+  onToggleMenu,
+  screenWidth,
+}) => {
+  const [pageCache, setPageCache] = useState<Record<number, PageImageInfo>>({});
+  const pageCacheRef = useRef<Record<number, PageImageInfo>>({});
+  const loadingPagesRef = useRef<Set<number>>(new Set());
+  const flatListRef = useRef<FlatList>(null);
+
+  const [realTotalPages, setRealTotalPages] = useState<number>(totalPages || 0);
+
+  const cleanPath = useMemo(() => {
+    return Platform.OS === 'android' ? pdfUri.replace('file://', '') : pdfUri;
+  }, [pdfUri]);
+
+  useEffect(() => {
+    if (totalPages > 0) {
+      setRealTotalPages(totalPages);
+    }
+  }, [totalPages]);
+
+  // Si totalPages es 0 al montar, obtener inmediatamente el conteo nativo
+  useEffect(() => {
+    let active = true;
+    async function fetchNativeCount() {
+      if (realTotalPages > 0 || !cleanPath) return;
+      try {
+        const count = await (PdfThumbnail as any).getPageCount(cleanPath);
+        if (count > 0 && active) {
+          setRealTotalPages(count);
+        }
+      } catch (err) {
+        console.warn('[ContinuousManhwaReader] Error fetching native page count:', err);
+      }
+    }
+    fetchNativeCount();
+    return () => { active = false; };
+  }, [cleanPath, realTotalPages]);
+
+  useEffect(() => {
+    pageCacheRef.current = pageCache;
+  }, [pageCache]);
+
+  const callbacksRef = useRef({ onPageChanged, realTotalPages, screenWidth, cleanPath });
+  useEffect(() => {
+    callbacksRef.current = { onPageChanged, realTotalPages, screenWidth, cleanPath };
+  }, [onPageChanged, realTotalPages, screenWidth, cleanPath]);
+
+  const prefetchPagesAround = useCallback(async (centerIndex: number) => {
+    const { realTotalPages: total, screenWidth: sw, cleanPath: path } = callbacksRef.current;
+    if (total <= 0) return;
+
+    const targetIndices: number[] = [];
+    for (let offset = -3; offset <= 8; offset++) {
+      const idx = centerIndex + offset;
+      if (idx >= 0 && idx < total) {
+        targetIndices.push(idx);
+      }
+    }
+
+    for (const idx of targetIndices) {
+      if (pageCacheRef.current[idx] || loadingPagesRef.current.has(idx)) {
+        continue;
+      }
+
+      loadingPagesRef.current.add(idx);
+
+      try {
+        const result = await PdfThumbnail.generate(path, idx);
+        if (result && result.uri) {
+          const info: PageImageInfo = {
+            uri: result.uri,
+            width: result.width || sw,
+            height: result.height || Math.round(sw * 1.4),
+          };
+          pageCacheRef.current = { ...pageCacheRef.current, [idx]: info };
+          setPageCache(prev => ({ ...prev, [idx]: info }));
+        }
+      } catch (err) {
+        console.warn(`[ContinuousManhwaReader] Error generating thumbnail for page ${idx}:`, err);
+      } finally {
+        loadingPagesRef.current.delete(idx);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (realTotalPages > 0) {
+      const startIdx = Math.max(0, Math.min(initialPage - 1, realTotalPages - 1));
+      prefetchPagesAround(startIdx);
+    }
+  }, [initialPage, realTotalPages, prefetchPagesAround]);
+
+  const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: Array<{ item: number }> }) => {
+    if (viewableItems && viewableItems.length > 0) {
+      const firstVisible = viewableItems[0].item;
+      callbacksRef.current.onPageChanged(firstVisible + 1);
+      prefetchPagesAround(firstVisible);
+    }
+  }).current;
+
+  const viewabilityConfig = useRef({
+    itemVisiblePercentThreshold: 1,
+    minimumViewTime: 30,
+  }).current;
+
+  const pagesArray = useMemo(() => Array.from({ length: realTotalPages }, (_, i) => i), [realTotalPages]);
+
+  const renderItem = useCallback(({ item: pageIndex }: { item: number }) => {
+    const pageInfo = pageCache[pageIndex];
+
+    if (pageInfo) {
+      const computedHeight = (screenWidth / pageInfo.width) * pageInfo.height;
+      return (
+        <TouchableWithoutFeedback onPress={onToggleMenu}>
+          <View style={{ width: screenWidth, height: computedHeight, backgroundColor: '#000' }}>
+            <Image
+              source={{ uri: pageInfo.uri }}
+              style={{ width: screenWidth, height: computedHeight }}
+              resizeMode="contain"
+              fadeDuration={0}
+            />
+          </View>
+        </TouchableWithoutFeedback>
+      );
+    }
+
+    return (
+      <TouchableWithoutFeedback onPress={onToggleMenu}>
+        <View
+          style={{
+            width: screenWidth,
+            height: Math.round(screenWidth * 1.4),
+            backgroundColor: '#121212',
+            justifyContent: 'center',
+            alignItems: 'center',
+            borderBottomWidth: 1,
+            borderBottomColor: '#222',
+          }}
+        >
+          <ActivityIndicator size="small" color={COLORS.accent} />
+          <Text style={{ color: 'rgba(255,255,255,0.4)', fontSize: 12, marginTop: 8 }}>
+            Cargando página {pageIndex + 1}...
+          </Text>
+        </View>
+      </TouchableWithoutFeedback>
+    );
+  }, [pageCache, screenWidth, onToggleMenu]);
+
+  useEffect(() => {
+    if (initialPage >= 1 && flatListRef.current && realTotalPages > 0) {
+      const targetIdx = Math.max(0, Math.min(initialPage - 1, realTotalPages - 1));
+      prefetchPagesAround(targetIdx);
+      setTimeout(() => {
+        try {
+          flatListRef.current?.scrollToIndex({ index: targetIdx, animated: false });
+        } catch (e) {
+          flatListRef.current?.scrollToOffset({ offset: 0, animated: false });
+        }
+      }, 50);
+    }
+  }, [initialPage, realTotalPages, prefetchPagesAround]);
+
+  if (realTotalPages <= 0) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#000000', gap: 12 }}>
+        <ActivityIndicator size="large" color={COLORS.accent} />
+        <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 14, fontWeight: '600' }}>
+          Cargando Manhwa...
+        </Text>
+      </View>
+    );
+  }
+
+  return (
+    <FlatList
+      ref={flatListRef}
+      data={pagesArray}
+      keyExtractor={(item) => item.toString()}
+      renderItem={renderItem}
+      onViewableItemsChanged={onViewableItemsChanged}
+      viewabilityConfig={viewabilityConfig}
+      removeClippedSubviews={Platform.OS === 'android'}
+      initialNumToRender={3}
+      maxToRenderPerBatch={4}
+      windowSize={7}
+      updateCellsBatchingPeriod={20}
+      showsVerticalScrollIndicator={false}
+      style={{ flex: 1, width: '100%', height: '100%', backgroundColor: '#000000' }}
+      onScrollToIndexFailed={(info) => {
+        setTimeout(() => {
+          flatListRef.current?.scrollToOffset({ offset: info.averageItemLength * info.index, animated: false });
+        }, 50);
+      }}
+    />
+  );
+});
 
 type ReaderNavigationProp = StackNavigationProp<RootStackParamList, 'Reader'>;
 type ReaderRouteProp = RouteProp<RootStackParamList, 'Reader'>;
@@ -65,6 +285,13 @@ export default function ReaderScreen({ navigation, route }: Props) {
   const [initialPage, setInitialPage] = useState<number>(1);
   const [isPdfLoaded, setIsPdfLoaded] = useState<boolean>(false);
   const [isProgressRestored, setIsProgressRestored] = useState<boolean>(false);
+  const [settings, setSettings] = useState<BookSettings | null>(null);
+  const [isSettingsLoaded, setIsSettingsLoaded] = useState<boolean>(false);
+  const settingsRef = useRef<BookSettings | null>(null);
+
+  useEffect(() => {
+    settingsRef.current = settings;
+  }, [settings]);
 
   // Estados de Gestos y Opciones
   const [showMenu, setShowMenu] = useState<boolean>(false);
@@ -113,40 +340,37 @@ export default function ReaderScreen({ navigation, route }: Props) {
         console.log('[ReaderScreen] Preparing file, original path:', path);
         
         // Solo copiamos si es PDF y tiene ruta externa (ej: content:// en Android)
-        if (isPdfSupported && path.startsWith('content://')) {
-          // Usamos el ID único del libro como nombre de archivo para evitar
-          // problemas de ENOENT por caracteres especiales (espacios, paréntesis, #)
-          const safeFileName = `${currentBook.id}.pdf`;
-          const tempUri = `${FileSystem.cacheDirectory}${safeFileName}`;
-          
-          console.log('[ReaderScreen] Cache target path:', tempUri);
-
-          // Verificar si ya existe para no copiar de nuevo inútilmente
-          const info = await FileSystem.getInfoAsync(tempUri);
-          if (!info.exists) {
-            console.log('[ReaderScreen] Copying to cache...');
-            await FileSystem.copyAsync({
-              from: path,
-              to: tempUri,
-            });
-            console.log('[ReaderScreen] Copy complete.');
-          } else {
-            console.log('[ReaderScreen] File already in cache, skipping copy.');
+          let finalUri = path;
+          if (isPdfSupported && path.startsWith('content://')) {
+            const safeFileName = `${currentBook.id}.pdf`;
+            const tempUri = `${FileSystem.cacheDirectory}${safeFileName}`;
+            
+            const info = await FileSystem.getInfoAsync(tempUri);
+            if (!info.exists) {
+              await FileSystem.copyAsync({
+                from: path,
+                to: tempUri,
+              });
+            }
+            finalUri = tempUri;
           }
 
           if (active) {
-            setLocalPdfUri(tempUri);
+            setLocalPdfUri(finalUri);
+            try {
+              const cleanPath = Platform.OS === 'android' ? finalUri.replace('file://', '') : finalUri;
+              const count = await (PdfThumbnail as any).getPageCount(cleanPath);
+              if (count > 0 && active) {
+                setTotalPages(count);
+                totalPagesRef.current = count;
+                setIsPdfLoaded(true);
+              }
+            } catch (e) {
+              console.warn('[ReaderScreen] Could not fetch native page count:', e);
+            }
           }
-        } else {
-          // Si es ruta local directa (file:///) o no requiere copiado
-          console.log('[ReaderScreen] Local path, no copy needed.');
-          if (active) {
-            setLocalPdfUri(path);
-          }
-        }
       } catch (error) {
         console.error('[ReaderScreen] Error preparing local PDF cache:', error);
-        // Intentar abrir el original como fallback en caso de error
         if (active) {
           setLocalPdfUri(currentBook.filePath);
         }
@@ -164,7 +388,7 @@ export default function ReaderScreen({ navigation, route }: Props) {
     };
   }, [currentBook, route.params?.preparedPath]);
 
-  // ─── Restaurar progreso guardado ───────────────────────────────────────
+  // ─── Restaurar progreso y configuración guardados ─────────────────────
   useEffect(() => {
     // Reiniciar estados locales para evitar arrastrar datos de otros libros
     setCurrentPage(0);
@@ -172,27 +396,36 @@ export default function ReaderScreen({ navigation, route }: Props) {
     setInitialPage(1);
     setIsPdfLoaded(false);
     setIsProgressRestored(false);
+    setIsSettingsLoaded(false);
 
-    async function restoreProgress() {
+    async function restoreProgressAndSettings() {
       try {
+        const loadedSettings = await StorageService.getBookSettings(bookId);
+        setSettings(loadedSettings);
+        setIsSettingsLoaded(true);
+
         const progress = await StorageService.getProgress(bookId);
         if (progress) {
           setCurrentPage(progress.currentPage);
-          setInitialPage(progress.currentPage + 1);
           setTotalPages(progress.totalPages);
+          if (loadedSettings.isRTL && loadedSettings.isHorizontal && progress.totalPages > 0) {
+            setInitialPage(progress.totalPages - progress.currentPage);
+          } else {
+            setInitialPage(progress.currentPage + 1);
+          }
         } else {
           setCurrentPage(0);
           setInitialPage(1);
           setTotalPages(0);
         }
       } catch (error) {
-        console.error('[ReaderScreen] Error restoring progress:', error);
+        console.error('[ReaderScreen] Error restoring progress and settings:', error);
       } finally {
         setIsProgressRestored(true);
       }
     }
 
-    restoreProgress();
+    restoreProgressAndSettings();
   }, [bookId]);
 
   // ─── Guardar progreso al salir (Cualquier gesto, botón físico o superior) ─
@@ -211,7 +444,8 @@ export default function ReaderScreen({ navigation, route }: Props) {
           percentage: Math.min(100, Math.max(0, pct)),
           lastReadAt: Date.now(),
         };
-        StorageService.saveProgress(progress).then(() => {
+        StorageService.saveProgress(progress, true).then(() => {
+          StorageService.flushProgress();
           useLibraryStore.getState().reloadProgress();
         });
       }
@@ -226,6 +460,13 @@ export default function ReaderScreen({ navigation, route }: Props) {
   const handlePdfLoadComplete = useCallback((numberOfPages: number) => {
     setTotalPages(numberOfPages);
     totalPagesRef.current = numberOfPages;
+    
+    const isRtlMode = settingsRef.current && settingsRef.current.isRTL && settingsRef.current.isHorizontal;
+    if (isRtlMode && currentPageRef.current === 0 && initialPage === 1) {
+      setInitialPage(numberOfPages);
+      return;
+    }
+    
     setIsPdfLoaded(true);
     
     const bId = bookIdRef.current;
@@ -242,22 +483,26 @@ export default function ReaderScreen({ navigation, route }: Props) {
       };
       StorageService.saveProgress(progress);
     }
-  }, []);
+  }, [initialPage]);
 
   const handlePdfPageChanged = useCallback((page: number) => {
-    const newPage = page - 1;
-    setCurrentPage(newPage); // react-native-pdf usa 1-indexed
-    currentPageRef.current = newPage;
+    const total = totalPagesRef.current;
+    const isRtlMode = settingsRef.current && settingsRef.current.isRTL && settingsRef.current.isHorizontal;
+    const logicalPage = (isRtlMode && total > 0)
+      ? total - page
+      : page - 1;
+
+    setCurrentPage(logicalPage);
+    currentPageRef.current = logicalPage;
     
     const bId = bookIdRef.current;
-    const total = totalPagesRef.current;
     
     // Guardar progreso en segundo plano inmediatamente
     if (bId && total > 0) {
-      const pct = total > 1 ? (newPage / (total - 1)) * 100 : 100;
+      const pct = total > 1 ? (logicalPage / (total - 1)) * 100 : 100;
       const progress: ReadingProgress = {
         bookId: bId,
-        currentPage: newPage,
+        currentPage: logicalPage,
         totalPages: total,
         percentage: Math.min(100, Math.max(0, pct)),
         lastReadAt: Date.now(),
@@ -266,25 +511,17 @@ export default function ReaderScreen({ navigation, route }: Props) {
     }
   }, []);
 
-  const handleOpenWithSystem = useCallback(async () => {
-    if (!currentBook?.filePath) return;
-    try {
-      const isAvailable = await Sharing.isAvailableAsync();
-      if (isAvailable) {
-        await Sharing.shareAsync(currentBook.filePath, {
-          mimeType: 'application/pdf',
-          dialogTitle: currentBook.title,
-        });
-      } else {
-        Alert.alert('Error', 'El visualizador del sistema no está disponible.');
-      }
-    } catch (error) {
-      console.error('[ReaderScreen] Error opening PDF with system:', error);
-      Alert.alert('Error', 'No se pudo abrir el archivo PDF.');
+
+  const updateSettings = useCallback(async (newSettings: BookSettings) => {
+    setSettings(newSettings);
+    if (totalPages > 0) {
+      const physicalPage = newSettings.isRTL && newSettings.isHorizontal
+        ? totalPages - currentPage
+        : currentPage + 1;
+      setInitialPage(physicalPage);
     }
-  }, [currentBook]);
-
-
+    await StorageService.saveBookSettings(bookId, newSettings);
+  }, [bookId, currentPage, totalPages]);
 
   const handleResetProgress = useCallback(async () => {
     Alert.alert(
@@ -296,7 +533,15 @@ export default function ReaderScreen({ navigation, route }: Props) {
           text: 'Sí, reiniciar',
           onPress: async () => {
             setCurrentPage(0);
-            setInitialPage(1);
+            const isRtl = settings && settings.isRTL && settings.isHorizontal;
+            const targetPhysicalPage = (isRtl && totalPages > 0) ? totalPages : 1;
+            
+            // Forzar actualización de initialPage incluso si ya valía 1
+            setInitialPage(0);
+            setTimeout(() => {
+              setInitialPage(targetPhysicalPage);
+            }, 10);
+            
             if (bookId && totalPages > 0) {
               const progress: ReadingProgress = {
                 bookId,
@@ -305,20 +550,17 @@ export default function ReaderScreen({ navigation, route }: Props) {
                 percentage: 0,
                 lastReadAt: Date.now(),
               };
-              await StorageService.saveProgress(progress);
+              await StorageService.saveProgress(progress, true);
+              await StorageService.flushProgress();
               await useLibraryStore.getState().reloadProgress();
             }
             setShowOptionsModal(false);
             setShowMenu(false);
-            // Forzar recarga rápida del visualizador de PDF al principio
-            const temp = localPdfUri;
-            setLocalPdfUri(null);
-            setTimeout(() => setLocalPdfUri(temp), 50);
           },
         },
       ]
     );
-  }, [bookId, totalPages, localPdfUri]);
+  }, [bookId, totalPages, settings]);
 
   const handleGoToPage = useCallback(() => {
     const pageNum = parseInt(inputPage, 10);
@@ -326,29 +568,32 @@ export default function ReaderScreen({ navigation, route }: Props) {
       Alert.alert('Error', `Por favor ingresa una página válida entre 1 y ${totalPages}.`);
       return;
     }
-    setCurrentPage(pageNum - 1);
-    setInitialPage(pageNum);
+    const logicalPage = pageNum - 1;
+    setCurrentPage(logicalPage);
+    
+    const isRtl = settings && settings.isRTL && settings.isHorizontal;
+    const targetPhysicalPage = (isRtl && totalPages > 0) ? totalPages - logicalPage : pageNum;
+    
+    setInitialPage(0);
+    setTimeout(() => {
+      setInitialPage(targetPhysicalPage);
+    }, 10);
     
     if (bookId) {
       const progress: ReadingProgress = {
         bookId,
-        currentPage: pageNum - 1,
+        currentPage: logicalPage,
         totalPages,
-        percentage: (pageNum - 1) / totalPages * 100,
+        percentage: (logicalPage) / totalPages * 100,
         lastReadAt: Date.now(),
       };
-      StorageService.saveProgress(progress);
+      StorageService.saveProgress(progress, true);
     }
     
     setShowOptionsModal(false);
     setShowMenu(false);
     setInputPage('');
-    
-    // Forzar recreación del PDF al inicio
-    const temp = localPdfUri;
-    setLocalPdfUri(null);
-    setTimeout(() => setLocalPdfUri(temp), 50);
-  }, [inputPage, totalPages, localPdfUri, bookId]);
+  }, [inputPage, totalPages, bookId, settings]);
 
   // ─── Render ────────────────────────────────────────────────────────────
   return (
@@ -364,87 +609,45 @@ export default function ReaderScreen({ navigation, route }: Props) {
         />
       )}
 
-      {/* Área de lectura - Scroll infinito vertical */}
+      {/* Área de lectura - Motor nativo react-native-pdf con renderizado C++ Pdfium de alta nitidez */}
       {isPreparingFile ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={COLORS.accent} />
-          <Text style={styles.loadingText}>
-            Cargando...
-          </Text>
+          <Text style={styles.loadingText}>Cargando...</Text>
         </View>
-      ) : isPdfSupported && localPdfUri ? (() => {
-        // En Android, react-native-pdf requiere ruta absoluta sin esquema 'file://'
-        const pdfSourceUri = Platform.OS === 'android'
-          ? localPdfUri.replace('file://', '')
-          : localPdfUri;
-        console.log('[ReaderScreen] Feeding PDF source to component:', pdfSourceUri);
+      ) : isPdfSupported && localPdfUri && isProgressRestored && isSettingsLoaded && settings ? (() => {
+        const pdfSourceUri = Platform.OS === 'android' ? localPdfUri.replace('file://', '') : localPdfUri;
+
         return (
-          <View
-            style={[
-              { flex: 1, width: '100%', height: '100%', opacity: isPdfLoaded ? 1 : 0 }
-            ]}
-          >
-            {isProgressRestored && (
-              <PdfComponent
-                key="V_fixed_width"
-                source={{ uri: pdfSourceUri, cache: false }}
-                page={initialPage}
-                onPageChanged={handlePdfPageChanged}
-                onLoadComplete={handlePdfLoadComplete}
-                style={[styles.pdfView, { width: W, height: H }]}
-                enableAntialiasing={true}
-                horizontal={false}
-                enablePaging={false}
-                fitPolicy={0}
-                spacing={0}
-                enableDoubleTapZoom={false}
-                minScale={1.0}
-                maxScale={4.0}
-                pointerEvents="auto"
-                onError={(error: any) => {
-                  console.error('[ReaderScreen] Error rendering PDF:', error);
-                }}
-              />
-            )}
+          <View style={{ flex: 1, width: '100%', height: '100%' }}>
+            <PdfComponent
+              key={`pdf_${settings.isHorizontal}_${settings.usePaging}_${settings.fitMode}_${settings.isRTL}_${initialPage}`}
+              source={{ uri: pdfSourceUri, cache: true }}
+              page={initialPage}
+              onPageChanged={handlePdfPageChanged}
+              onLoadComplete={handlePdfLoadComplete}
+              style={[styles.pdfView, { width: W, height: H }]}
+              enableAntialiasing={true}
+              horizontal={settings.isHorizontal}
+              enablePaging={settings.usePaging}
+              fitPolicy={settings.fitMode}
+              spacing={0}
+              enableDoubleTapZoom={settings.enableDoubleTapZoom}
+              minScale={1.0}
+              maxScale={4.0}
+              pointerEvents="auto"
+              onError={(error: any) => {
+                console.error('[ReaderScreen] Error rendering PDF:', error);
+              }}
+            />
           </View>
         );
-      })() : (
-        <View style={styles.fallbackContainer}>
-          <Text style={styles.fallbackIcon}>⊞</Text>
-          <Text style={styles.fallbackTitle}>
-            {currentBook?.title ?? 'Cargando...'}
-          </Text>
-          <Text style={styles.fallbackWarning}>
-            Modo lectura limitada (Expo Go)
-          </Text>
-          <Text style={styles.fallbackDescription}>
-            El motor de lectura integrado requiere compilar un Development Build de InkTrick.
-            Sin embargo, puedes leer este archivo usando el visor de PDF nativo de tu sistema.
-          </Text>
-          <TouchableOpacity
-            style={styles.openSystemButton}
-            onPress={handleOpenWithSystem}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.openSystemButtonText}>
-              ⊞ Abrir con visor del sistema
-            </Text>
-          </TouchableOpacity>
-        </View>
-      )}
+      })() : null}
 
-      {/* Pantalla/Barra inferior de "Abriendo..." */}
-      {(!isPdfLoaded || isPreparingFile) && (
+      {/* Indicador de carga discreto de emergencia si aun no hay Uri */}
+      {!localPdfUri && (
         <View style={styles.loadingOverlay}>
-          <ActivityIndicator size="large" color={COLORS.accent} style={{ marginBottom: 24 }} />
-          <View style={styles.loadingBarContainer}>
-            <Text style={styles.loadingTitle} numberOfLines={1}>
-              Abriendo: {currentBook?.title}
-            </Text>
-            <Text style={styles.loadingSubtitle}>
-              Cargando documento en memoria para evitar lag...
-            </Text>
-          </View>
+          <ActivityIndicator size="large" color={COLORS.accent} />
         </View>
       )}
 
@@ -502,7 +705,147 @@ export default function ReaderScreen({ navigation, route }: Props) {
                 </View>
 
                 <View style={styles.divider} />
-                
+
+                {settings && (
+                  <View>
+                    {/* Orientación */}
+                    <View style={styles.optionRow}>
+                      <Text style={styles.optionLabel}>Orientación:</Text>
+                      <View style={styles.optionButtons}>
+                        <TouchableOpacity
+                          style={[styles.optionBtn, !settings.isHorizontal && styles.optionBtnActive]}
+                          onPress={() => updateSettings({ ...settings, isHorizontal: false })}
+                        >
+                          <Text style={[styles.optionBtnText, !settings.isHorizontal && styles.optionBtnTextActive]}>Vertical</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[styles.optionBtn, settings.isHorizontal && styles.optionBtnActive]}
+                          onPress={() => updateSettings({ ...settings, isHorizontal: true })}
+                        >
+                          <Text style={[styles.optionBtnText, settings.isHorizontal && styles.optionBtnTextActive]}>Horizontal</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+
+                    {/* Paginación */}
+                    <View style={styles.optionRow}>
+                      <Text style={styles.optionLabel}>Desplazamiento:</Text>
+                      <View style={styles.optionButtons}>
+                        <TouchableOpacity
+                          style={[styles.optionBtn, !settings.usePaging && styles.optionBtnActive]}
+                          onPress={() => updateSettings({ ...settings, usePaging: false })}
+                        >
+                          <Text style={[styles.optionBtnText, !settings.usePaging && styles.optionBtnTextActive]}>Continuo</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[styles.optionBtn, settings.usePaging && styles.optionBtnActive]}
+                          onPress={() => updateSettings({ ...settings, usePaging: true })}
+                        >
+                          <Text style={[styles.optionBtnText, settings.usePaging && styles.optionBtnTextActive]}>Páginas</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+
+                    {/* Ajustar a */}
+                    <View style={styles.optionRow}>
+                      <Text style={styles.optionLabel}>Ajustar a:</Text>
+                      <View style={styles.optionButtons}>
+                        <TouchableOpacity
+                          style={[styles.optionBtn, settings.fitMode === 0 && styles.optionBtnActive]}
+                          onPress={() => updateSettings({ ...settings, fitMode: 0 })}
+                        >
+                          <Text style={[styles.optionBtnText, settings.fitMode === 0 && styles.optionBtnTextActive]}>Ancho</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[styles.optionBtn, settings.fitMode === 1 && styles.optionBtnActive]}
+                          onPress={() => updateSettings({ ...settings, fitMode: 1 })}
+                        >
+                          <Text style={[styles.optionBtnText, settings.fitMode === 1 && styles.optionBtnTextActive]}>Alto</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[styles.optionBtn, settings.fitMode === 2 && styles.optionBtnActive]}
+                          onPress={() => updateSettings({ ...settings, fitMode: 2 })}
+                        >
+                          <Text style={[styles.optionBtnText, settings.fitMode === 2 && styles.optionBtnTextActive]}>Ambos</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+
+                    {/* Dirección (Manga RTL) */}
+                    {settings.isHorizontal && (
+                      <View style={styles.optionRow}>
+                        <Text style={styles.optionLabel}>Dirección (Manga):</Text>
+                        <View style={styles.optionButtons}>
+                          <TouchableOpacity
+                            style={[styles.optionBtn, !settings.isRTL && styles.optionBtnActive]}
+                            onPress={() => updateSettings({ ...settings, isRTL: false })}
+                          >
+                            <Text style={[styles.optionBtnText, !settings.isRTL && styles.optionBtnTextActive]}>Izq ➔ Der</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={[styles.optionBtn, settings.isRTL && styles.optionBtnActive]}
+                            onPress={() => updateSettings({ ...settings, isRTL: true })}
+                          >
+                            <Text style={[styles.optionBtnText, settings.isRTL && styles.optionBtnTextActive]}>Der ➔ Izq</Text>
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    )}
+
+                    {/* Zoom Doble Toque */}
+                    <View style={styles.optionRow}>
+                      <Text style={styles.optionLabel}>Zoom Doble Toque:</Text>
+                      <View style={styles.optionButtons}>
+                        <TouchableOpacity
+                          style={[styles.optionBtn, !settings.enableDoubleTapZoom && styles.optionBtnActive]}
+                          onPress={() => updateSettings({ ...settings, enableDoubleTapZoom: false })}
+                        >
+                          <Text style={[styles.optionBtnText, !settings.enableDoubleTapZoom && styles.optionBtnTextActive]}>No</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[styles.optionBtn, settings.enableDoubleTapZoom && styles.optionBtnActive]}
+                          onPress={() => updateSettings({ ...settings, enableDoubleTapZoom: true })}
+                        >
+                          <Text style={[styles.optionBtnText, settings.enableDoubleTapZoom && styles.optionBtnTextActive]}>Sí</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+
+                    {/* Filtro de brillo */}
+                    <View style={styles.optionRow}>
+                      <Text style={styles.optionLabel}>Filtro brillo:</Text>
+                      <View style={styles.optionButtons}>
+                        <TouchableOpacity
+                          style={[styles.optionBtn, settings.brightnessDimmer === 0 && styles.optionBtnActive]}
+                          onPress={() => updateSettings({ ...settings, brightnessDimmer: 0 })}
+                        >
+                          <Text style={[styles.optionBtnText, settings.brightnessDimmer === 0 && styles.optionBtnTextActive]}>0%</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[styles.optionBtn, settings.brightnessDimmer === 0.2 && styles.optionBtnActive]}
+                          onPress={() => updateSettings({ ...settings, brightnessDimmer: 0.2 })}
+                        >
+                          <Text style={[styles.optionBtnText, settings.brightnessDimmer === 0.2 && styles.optionBtnTextActive]}>20%</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[styles.optionBtn, settings.brightnessDimmer === 0.4 && styles.optionBtnActive]}
+                          onPress={() => updateSettings({ ...settings, brightnessDimmer: 0.4 })}
+                        >
+                          <Text style={[styles.optionBtnText, settings.brightnessDimmer === 0.4 && styles.optionBtnTextActive]}>40%</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[styles.optionBtn, settings.brightnessDimmer === 0.6 && styles.optionBtnActive]}
+                          onPress={() => updateSettings({ ...settings, brightnessDimmer: 0.6 })}
+                        >
+                          <Text style={[styles.optionBtnText, settings.brightnessDimmer === 0.6 && styles.optionBtnTextActive]}>60%</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+
+                    <View style={styles.divider} />
+                  </View>
+                )}
+
                 {/* Acciones Rápidas */}
                 <TouchableOpacity style={styles.actionRowButton} onPress={handleResetProgress}>
                   <Text style={styles.actionRowText}>↻ Reiniciar lectura</Text>
@@ -528,6 +871,21 @@ export default function ReaderScreen({ navigation, route }: Props) {
             {currentPage + 1} / {totalPages}
           </Text>
         </View>
+      )}
+
+      {/* Filtro nocturno / Dimmer overlay */}
+      {settings && settings.brightnessDimmer > 0 && (
+        <View
+          style={[
+            StyleSheet.absoluteFillObject,
+            {
+              backgroundColor: '#000000',
+              opacity: settings.brightnessDimmer,
+              zIndex: 9999,
+            }
+          ]}
+          pointerEvents="none"
+        />
       )}
     </View>
   );
@@ -556,53 +914,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: COLORS.text + '90',
   },
-  fallbackContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 12,
-    paddingHorizontal: 32,
-  },
-  fallbackIcon: {
-    fontSize: 80,
-  },
-  fallbackTitle: {
-    fontSize: 22,
-    fontWeight: '700',
-    textAlign: 'center',
-    color: COLORS.text,
-  },
-  fallbackWarning: {
-    fontSize: 16,
-    fontWeight: '700',
-    textAlign: 'center',
-    marginTop: 8,
-    color: COLORS.accent,
-  },
-  fallbackDescription: {
-    fontSize: 13,
-    textAlign: 'center',
-    lineHeight: 18,
-    marginTop: 8,
-    marginBottom: 24,
-    color: COLORS.text + '80',
-  },
-  openSystemButton: {
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 12,
-    backgroundColor: COLORS.accent,
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  openSystemButtonText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#0A0A0A',
-  },
+
   topMenu: {
     position: 'absolute',
     top: 0,
@@ -699,7 +1011,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   optionBtnTextActive: {
-    color: '#FFFFFF',
+    color: '#0A0A0A',
     fontWeight: '700',
   },
   divider: {
