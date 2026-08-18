@@ -5,16 +5,46 @@ import PdfThumbnail from 'react-native-pdf-thumbnail';
 import { BookFile, LibrarySection, ReadingProgress } from '../utils/types';
 import { scanDirectory } from '../services/fileScanner';
 import * as StorageService from '../services/storageService';
+import * as ComicService from '../services/comicService';
 
-// Helper para generar miniatura de la primera página del PDF
-async function generatePdfThumbnail(filePath: string): Promise<string | undefined> {
+// Helper para generar miniatura de la página del PDF (por defecto 0)
+async function generatePdfThumbnail(filePath: string, pageIndex: number = 0): Promise<string | undefined> {
   try {
     const cleanPath = Platform.OS === 'android' ? filePath.replace('file://', '') : filePath;
-    const result = await PdfThumbnail.generate(cleanPath, 0);
+    const result = await PdfThumbnail.generate(cleanPath, Math.max(0, pageIndex));
     return result.uri;
   } catch (e) {
     console.warn('[LibraryStore] Failed to generate PDF thumbnail:', filePath, e);
     return undefined;
+  }
+}
+
+// Helper unificado para generar miniatura según el formato
+async function generateBookCover(book: BookFile): Promise<string | undefined> {
+  if (book.format === '.cbr' || book.format === '.cbz') {
+    return ComicService.extractCover(book.filePath, book.id);
+  } else {
+    return generatePdfThumbnail(book.filePath, book.coverPage ? book.coverPage - 1 : 0);
+  }
+}
+
+// Helper para procesar portadas en lotes paralelos acotados (evita saturar memoria en dispositivos lentos)
+async function generateCoversInBatches(books: BookFile[], batchSize: number = 3): Promise<void> {
+  const booksToProcess = books.filter(b => !b.coverUri);
+  for (let i = 0; i < booksToProcess.length; i += batchSize) {
+    const chunk = booksToProcess.slice(i, i + batchSize);
+    await Promise.all(
+      chunk.map(async book => {
+        try {
+          const thumbUri = await generateBookCover(book);
+          if (thumbUri) {
+            book.coverUri = thumbUri;
+          }
+        } catch (err) {
+          console.warn('[LibraryStore] Error in batch cover generation:', book.title, err);
+        }
+      })
+    );
   }
 }
 
@@ -39,9 +69,11 @@ interface LibraryStore {
   setActiveSection: (section: LibrarySection) => void;
   toggleFavorite: (bookId: string) => Promise<void>;
   updateLastOpened: (bookId: string) => Promise<void>;
+  updateBookCover: (bookId: string, pageNumber: number) => Promise<string | undefined>;
 
   // Acciones en lote (Multi-selección)
   toggleFavoriteBatch: (bookIds: string[]) => Promise<void>;
+  markAsReadBatch: (bookIds: string[]) => Promise<void>;
   deleteBooksBatch: (bookIds: string[]) => Promise<void>;
   assignFolderBatch: (bookIds: string[], folderName: string) => Promise<void>;
 
@@ -158,6 +190,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
             addedAt: existing.addedAt,
             folder: existing.folder || scanned.folder, // Conservamos la carpeta si ya tenía una asignada
             coverUri: existing.coverUri || scanned.coverUri,
+            coverPage: existing.coverPage,
           };
         }
         return scanned;
@@ -171,16 +204,8 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         }
       }
 
-      // Generar miniatura en segundo plano para cualquier PDF que no tenga portada emparejada
-      for (let i = 0; i < allBooks.length; i++) {
-        if (!allBooks[i].coverUri) {
-          console.log('[LibraryStore] Generating cover for:', allBooks[i].title);
-          const thumbUri = await generatePdfThumbnail(allBooks[i].filePath);
-          if (thumbUri) {
-            allBooks[i].coverUri = thumbUri;
-          }
-        }
-      }
+      // Generar miniaturas en paralelo acotado (máx 3 a la vez) para no bloquear UI ni memoria
+      await generateCoversInBatches(allBooks, 3);
 
       set({ books: allBooks, isScanning: false });
       await StorageService.saveLibrary(allBooks);
@@ -237,7 +262,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
 
       const existingBooks = get().books;
 
-      // Fusionar libros manteniendo favoritos y progreso
+      // Fusionar libros manteniendo favoritos, carpetas, portada personalizada y progreso
       const mergedScanned = allScannedBooks.map(scanned => {
         const existing = existingBooks.find(
           b => b.fileName.toLowerCase() === scanned.fileName.toLowerCase()
@@ -251,6 +276,7 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
             addedAt: existing.addedAt,
             folder: existing.folder || scanned.folder,
             coverUri: existing.coverUri || scanned.coverUri,
+            coverPage: existing.coverPage,
           };
         }
         return scanned;
@@ -264,16 +290,8 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
         }
       }
 
-      // Generar miniatura para mangas nuevos
-      for (let i = 0; i < allBooks.length; i++) {
-        if (!allBooks[i].coverUri) {
-          console.log('[LibraryStore] Generating cover for new book:', allBooks[i].title);
-          const thumbUri = await generatePdfThumbnail(allBooks[i].filePath);
-          if (thumbUri) {
-            allBooks[i].coverUri = thumbUri;
-          }
-        }
-      }
+      // Generar miniatura para libros nuevos en lotes paralelos
+      await generateCoversInBatches(allBooks, 3);
 
       set({ books: allBooks, isScanning: false });
       await StorageService.saveLibrary(allBooks);
@@ -311,6 +329,44 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     await StorageService.saveLibrary(books);
   },
 
+  /**
+   * Cambia la portada del libro generando/extrayendo la miniatura de la página especificada (1-indexed).
+   */
+  updateBookCover: async (bookId: string, pageNumber: number) => {
+    const book = get().books.find(b => b.id === bookId);
+    if (!book || pageNumber < 1) return undefined;
+
+    try {
+      let newCoverUri: string | undefined;
+
+      if (book.format === '.cbr' || book.format === '.cbz') {
+        // Para cómics, verificar si las páginas ya están extraídas
+        const pages = await ComicService.extractComicPages(book.id, book.filePath);
+        const targetIndex = pageNumber - 1;
+        if (pages.length > 0 && targetIndex >= 0 && targetIndex < pages.length) {
+          newCoverUri = pages[targetIndex];
+        }
+      } else {
+        // Para PDFs, generar miniatura de la página solicitada (0-indexed en nativo)
+        const cleanPath = Platform.OS === 'android' ? book.filePath.replace('file://', '') : book.filePath;
+        const result = await PdfThumbnail.generate(cleanPath, pageNumber - 1, 100);
+        newCoverUri = result.uri;
+      }
+
+      if (newCoverUri) {
+        const books = get().books.map(b =>
+          b.id === bookId ? { ...b, coverUri: newCoverUri, coverPage: pageNumber } : b
+        );
+        set({ books });
+        await StorageService.saveLibrary(books);
+        return newCoverUri;
+      }
+    } catch (err) {
+      console.error('[LibraryStore] Error updating cover for book:', bookId, err);
+    }
+    return undefined;
+  },
+
   // ─── Acciones en lote ──────────────────────────────────────────────────
 
   /**
@@ -331,6 +387,31 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
 
     set({ books });
     await StorageService.saveLibrary(books);
+  },
+
+  /**
+   * Marca en lote los libros seleccionados con 100% de progreso de lectura.
+   */
+  markAsReadBatch: async (bookIds: string[]) => {
+    const { progress } = get();
+    const updatedProgress = { ...progress };
+    const now = Date.now();
+
+    for (const id of bookIds) {
+      const existing = progress[id];
+      const totalPages = existing && existing.totalPages > 0 ? existing.totalPages : 1;
+      const newProg: ReadingProgress = {
+        bookId: id,
+        currentPage: totalPages - 1,
+        totalPages: totalPages,
+        percentage: 100,
+        lastReadAt: now,
+      };
+      updatedProgress[id] = newProg;
+      await StorageService.saveProgress(newProg, true);
+    }
+
+    set({ progress: updatedProgress });
   },
 
   /**

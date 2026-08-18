@@ -21,6 +21,7 @@ import {
   useWindowDimensions,
   FlatList,
   Image,
+  Animated,
 } from 'react-native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RouteProp } from '@react-navigation/native';
@@ -30,6 +31,9 @@ import { RootStackParamList } from '../utils/types';
 import { COLORS } from '../utils/constants';
 import { useLibraryStore } from '../store/libraryStore';
 import * as StorageService from '../services/storageService';
+import * as ComicService from '../services/comicService';
+import * as BookPreloadService from '../services/bookPreloadService';
+import { BackIcon, GearIcon, CloseIcon } from '../components/Icons';
 import { ReadingProgress, BookSettings } from '../utils/types';
 import { PdfJsViewer } from '../components/PdfJsViewer';
 
@@ -261,6 +265,254 @@ const ContinuousManhwaReader: React.FC<ContinuousManhwaReaderProps> = React.memo
   );
 });
 
+interface ZoomablePageProps {
+  uri: string;
+  width: number;
+  height: number;
+  fitMode: number;
+  isHorizontal: boolean;
+  enableDoubleTapZoom?: boolean;
+  onImageLoad?: (width: number, height: number) => void;
+}
+
+const ZoomableImagePage: React.FC<ZoomablePageProps> = React.memo(({
+  uri,
+  width,
+  height,
+  fitMode,
+  isHorizontal,
+  enableDoubleTapZoom = true,
+  onImageLoad,
+}) => {
+  const scale = useRef(new Animated.Value(1)).current;
+  const [isZoomed, setIsZoomed] = useState(false);
+  const lastTapRef = useRef<number>(0);
+
+  // Si se desactiva el zoom en los ajustes mientras estaba zoomeado, resetear suavemente a 1.0
+  useEffect(() => {
+    if (!enableDoubleTapZoom && isZoomed) {
+      Animated.spring(scale, {
+        toValue: 1,
+        useNativeDriver: true,
+        friction: 7,
+      }).start();
+      setIsZoomed(false);
+    }
+  }, [enableDoubleTapZoom, isZoomed, scale]);
+
+  const handleDoubleTap = useCallback(() => {
+    if (!enableDoubleTapZoom) return;
+
+    const now = Date.now();
+    const DOUBLE_TAP_DELAY = 300;
+    if (now - lastTapRef.current < DOUBLE_TAP_DELAY) {
+      // Doble toque detectado
+      if (isZoomed) {
+        Animated.spring(scale, {
+          toValue: 1,
+          useNativeDriver: true,
+          friction: 7,
+        }).start();
+        setIsZoomed(false);
+      } else {
+        Animated.spring(scale, {
+          toValue: 2.2,
+          useNativeDriver: true,
+          friction: 7,
+        }).start();
+        setIsZoomed(true);
+      }
+      lastTapRef.current = 0;
+    } else {
+      lastTapRef.current = now;
+    }
+  }, [enableDoubleTapZoom, isZoomed, scale]);
+
+  return (
+    <TouchableWithoutFeedback onPress={handleDoubleTap}>
+      <View
+        style={{
+          width,
+          height,
+          backgroundColor: '#000000',
+          justifyContent: 'center',
+          alignItems: 'center',
+          overflow: 'hidden',
+        }}
+      >
+        <Animated.Image
+          source={{ uri }}
+          style={{
+            width,
+            height,
+            transform: [{ scale }],
+          }}
+          resizeMode={fitMode === 0 ? 'contain' : fitMode === 1 ? 'cover' : 'contain'}
+          fadeDuration={0}
+          onLoad={(e) => {
+            if (onImageLoad) {
+              const { width: w, height: h } = e.nativeEvent.source;
+              onImageLoad(w, h);
+            }
+          }}
+        />
+      </View>
+    </TouchableWithoutFeedback>
+  );
+});
+
+interface ComicImageViewerProps {
+  pages: string[];
+  initialPage: number;
+  isHorizontal: boolean;
+  usePaging: boolean;
+  isRTL: boolean;
+  fitMode: number;
+  enableDoubleTapZoom?: boolean;
+  onPageChanged: (pageIndex: number) => void;
+  screenWidth: number;
+  screenHeight: number;
+}
+
+const ComicImageViewer: React.FC<ComicImageViewerProps> = React.memo(({
+  pages,
+  initialPage,
+  isHorizontal,
+  usePaging,
+  isRTL,
+  fitMode,
+  enableDoubleTapZoom = true,
+  onPageChanged,
+  screenWidth,
+  screenHeight,
+}) => {
+  const flatListRef = useRef<FlatList>(null);
+  const [imageHeights, setImageHeights] = useState<Record<number, number>>({});
+  const totalPages = pages.length;
+
+  const targetIdx = useMemo(() => {
+    if (totalPages <= 0) return 0;
+    return isRTL && isHorizontal
+      ? Math.max(0, Math.min(totalPages - initialPage, totalPages - 1))
+      : Math.max(0, Math.min(initialPage - 1, totalPages - 1));
+  }, [initialPage, isHorizontal, isRTL, totalPages]);
+
+  // Bandera para evitar que FlatList dispare onViewableItemsChanged con página errónea antes de posicionar el scroll
+  const isInitialScrollSettled = useRef<boolean>(false);
+
+  useEffect(() => {
+    isInitialScrollSettled.current = false;
+    const timer = setTimeout(() => {
+      isInitialScrollSettled.current = true;
+    }, 280);
+    return () => clearTimeout(timer);
+  }, [initialPage, isHorizontal, isRTL]);
+
+  const handleImageLoad = useCallback((index: number, width: number, height: number) => {
+    if (width > 0 && height > 0) {
+      const computed = (screenWidth / width) * height;
+      setImageHeights(prev => (prev[index] === computed ? prev : { ...prev, [index]: computed }));
+    }
+  }, [screenWidth]);
+
+  const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: Array<{ index: number | null }> }) => {
+    if (!isInitialScrollSettled.current) return;
+    if (viewableItems && viewableItems.length > 0 && viewableItems[0].index !== null) {
+      const firstVisible = viewableItems[0].index;
+      const logicalPage = (isRTL && isHorizontal)
+        ? (totalPages - firstVisible)
+        : (firstVisible + 1);
+      onPageChanged(logicalPage);
+    }
+  }).current;
+
+  const viewabilityConfig = useRef({
+    itemVisiblePercentThreshold: 20,
+    minimumViewTime: 30,
+  }).current;
+
+  // Scroll inicial a initialPage - solo se ejecuta una vez al montar o tras cambio deliberado de eje
+  const hasInitiallyScrolledRef = useRef<boolean>(false);
+  useEffect(() => {
+    if (!hasInitiallyScrolledRef.current && flatListRef.current && totalPages > 0) {
+      hasInitiallyScrolledRef.current = true;
+      setTimeout(() => {
+        try {
+          flatListRef.current?.scrollToIndex({ index: targetIdx, animated: false });
+        } catch (e) {
+          flatListRef.current?.scrollToOffset({
+            offset: isHorizontal ? targetIdx * screenWidth : 0,
+            animated: false
+          });
+        }
+      }, 50);
+    }
+  }, [targetIdx, isHorizontal, totalPages, screenWidth]);
+
+  const renderItem = useCallback(({ item, index }: { item: string; index: number }) => {
+    if (isHorizontal) {
+      return (
+        <ZoomableImagePage
+          uri={item}
+          width={screenWidth}
+          height={screenHeight}
+          fitMode={fitMode}
+          isHorizontal={true}
+          enableDoubleTapZoom={enableDoubleTapZoom}
+        />
+      );
+    }
+
+    const itemHeight = imageHeights[index] || Math.round(screenWidth * 1.4);
+
+    return (
+      <ZoomableImagePage
+        uri={item}
+        width={screenWidth}
+        height={itemHeight}
+        fitMode={fitMode}
+        isHorizontal={false}
+        enableDoubleTapZoom={enableDoubleTapZoom}
+        onImageLoad={(w, h) => handleImageLoad(index, w, h)}
+      />
+    );
+  }, [isHorizontal, screenWidth, screenHeight, fitMode, enableDoubleTapZoom, imageHeights, handleImageLoad]);
+
+  return (
+    <FlatList
+      ref={flatListRef}
+      data={pages}
+      keyExtractor={(_, index) => index.toString()}
+      renderItem={renderItem}
+      horizontal={isHorizontal}
+      pagingEnabled={isHorizontal && usePaging}
+      showsVerticalScrollIndicator={false}
+      showsHorizontalScrollIndicator={false}
+      onViewableItemsChanged={onViewableItemsChanged}
+      viewabilityConfig={viewabilityConfig}
+      initialNumToRender={4}
+      maxToRenderPerBatch={4}
+      windowSize={7}
+      removeClippedSubviews={Platform.OS === 'android'}
+      getItemLayout={isHorizontal ? (_, index) => ({
+        length: screenWidth,
+        offset: screenWidth * index,
+        index,
+      }) : undefined}
+      initialScrollIndex={isHorizontal && targetIdx > 0 ? targetIdx : undefined}
+      style={{ flex: 1, width: '100%', height: '100%', backgroundColor: '#000000' }}
+      onScrollToIndexFailed={(info) => {
+        setTimeout(() => {
+          flatListRef.current?.scrollToOffset({
+            offset: isHorizontal ? info.index * screenWidth : info.averageItemLength * info.index,
+            animated: false
+          });
+        }, 50);
+      }}
+    />
+  );
+});
+
 type ReaderNavigationProp = StackNavigationProp<RootStackParamList, 'Reader'>;
 type ReaderRouteProp = RouteProp<RootStackParamList, 'Reader'>;
 
@@ -276,14 +528,16 @@ export default function ReaderScreen({ navigation, route }: Props) {
   // Store
   const books = useLibraryStore(state => state.books);
   const currentBook = books.find(b => b.id === bookId);
+  const isComic = currentBook?.format === '.cbr' || currentBook?.format === '.cbz';
 
   // Estado local del lector
   const [localPdfUri, setLocalPdfUri] = useState<string | null>(null);
+  const [comicPages, setComicPages] = useState<string[]>([]);
   const [isPreparingFile, setIsPreparingFile] = useState<boolean>(true);
   const [currentPage, setCurrentPage] = useState<number>(0);
   const [totalPages, setTotalPages] = useState<number>(0);
   const [initialPage, setInitialPage] = useState<number>(1);
-  const [isPdfLoaded, setIsPdfLoaded] = useState<boolean>(false);
+  const [isFileLoaded, setIsFileLoaded] = useState<boolean>(false);
   const [isProgressRestored, setIsProgressRestored] = useState<boolean>(false);
   const [settings, setSettings] = useState<BookSettings | null>(null);
   const [isSettingsLoaded, setIsSettingsLoaded] = useState<boolean>(false);
@@ -316,32 +570,85 @@ export default function ReaderScreen({ navigation, route }: Props) {
     totalPagesRef.current = totalPages;
   }, [totalPages]);
 
-  // ─── Preparación del archivo (cache de content://) ─────────────────────
+  // Animación de auto-ocultado para el indicador de página (desaparece tras 1.5s)
+  const pageIndicatorOpacity = useRef(new Animated.Value(0)).current;
+  const hideIndicatorTimer = useRef<NodeJS.Timeout | null>(null);
+
+  const showPageIndicator = useCallback(() => {
+    if (hideIndicatorTimer.current) {
+      clearTimeout(hideIndicatorTimer.current);
+    }
+    // Aparece suavemente en 150ms
+    Animated.timing(pageIndicatorOpacity, {
+      toValue: 1,
+      duration: 150,
+      useNativeDriver: true,
+    }).start();
+
+    // Desaparece tras 1.5s (1500 ms)
+    hideIndicatorTimer.current = setTimeout(() => {
+      Animated.timing(pageIndicatorOpacity, {
+        toValue: 0,
+        duration: 350,
+        useNativeDriver: true,
+      }).start();
+    }, 1500);
+  }, [pageIndicatorOpacity]);
+
+  useEffect(() => {
+    return () => {
+      if (hideIndicatorTimer.current) {
+        clearTimeout(hideIndicatorTimer.current);
+      }
+    };
+  }, []);
+
+  // ─── Preparación del archivo (CBR / CBZ o PDF 100% en memoria/disco) ────
   useEffect(() => {
     let active = true;
 
     async function prepareFile() {
       if (!currentBook) return;
 
-      // Si ya se pre-cargó en el lobby (Dashboard) y se nos pasó la ruta preparada
+      // Si ya se pre-cargó en el Dashboard y se nos pasó la ruta preparada
       const preparedPath = route.params?.preparedPath;
-      if (preparedPath) {
+      if (preparedPath && !isComic) {
         console.log('[ReaderScreen] Using pre-loaded prepared path:', preparedPath);
         if (active) {
           setLocalPdfUri(preparedPath);
+          try {
+            const cleanPath = Platform.OS === 'android' ? preparedPath.replace('file://', '') : preparedPath;
+            const count = await (PdfThumbnail as any).getPageCount(cleanPath);
+            if (count > 0 && active) {
+              setTotalPages(count);
+              totalPagesRef.current = count;
+            }
+          } catch (e) {}
+          setIsFileLoaded(true);
           setIsPreparingFile(false);
+          showPageIndicator();
         }
         return;
       }
 
       setIsPreparingFile(true);
       try {
-        const path = currentBook.filePath;
-        console.log('[ReaderScreen] Preparing file, original path:', path);
-        
-        // Solo copiamos si es PDF y tiene ruta externa (ej: content:// en Android)
+        if (isComic) {
+          // CBR / CBZ: Extraer cómics a imágenes originales sin compresión
+          console.log('[ReaderScreen] Loading comic archive:', currentBook.filePath);
+          const pages = await ComicService.extractComicPages(currentBook.id, currentBook.filePath);
+          if (active && pages.length > 0) {
+            setComicPages(pages);
+            setTotalPages(pages.length);
+            totalPagesRef.current = pages.length;
+            setIsFileLoaded(true);
+            showPageIndicator();
+          }
+        } else {
+          // PDF: Copiar a caché local si es content:// y cargar directamente
+          const path = currentBook.filePath;
           let finalUri = path;
-          if (isPdfSupported && path.startsWith('content://')) {
+          if (path.startsWith('content://')) {
             const safeFileName = `${currentBook.id}.pdf`;
             const tempUri = `${FileSystem.cacheDirectory}${safeFileName}`;
             
@@ -363,16 +670,19 @@ export default function ReaderScreen({ navigation, route }: Props) {
               if (count > 0 && active) {
                 setTotalPages(count);
                 totalPagesRef.current = count;
-                setIsPdfLoaded(true);
               }
             } catch (e) {
               console.warn('[ReaderScreen] Could not fetch native page count:', e);
             }
+            setIsFileLoaded(true);
+            showPageIndicator();
           }
+        }
       } catch (error) {
-        console.error('[ReaderScreen] Error preparing local PDF cache:', error);
+        console.error('[ReaderScreen] Error preparing book:', error);
         if (active) {
           setLocalPdfUri(currentBook.filePath);
+          setIsFileLoaded(true);
         }
       } finally {
         if (active) {
@@ -386,7 +696,7 @@ export default function ReaderScreen({ navigation, route }: Props) {
     return () => {
       active = false;
     };
-  }, [currentBook, route.params?.preparedPath]);
+  }, [currentBook, showPageIndicator]);
 
   // ─── Restaurar progreso y configuración guardados ─────────────────────
   useEffect(() => {
@@ -394,7 +704,7 @@ export default function ReaderScreen({ navigation, route }: Props) {
     setCurrentPage(0);
     setTotalPages(0);
     setInitialPage(1);
-    setIsPdfLoaded(false);
+    setIsFileLoaded(false);
     setIsProgressRestored(false);
     setIsSettingsLoaded(false);
 
@@ -405,19 +715,26 @@ export default function ReaderScreen({ navigation, route }: Props) {
         setIsSettingsLoaded(true);
 
         const progress = await StorageService.getProgress(bookId);
-        if (progress) {
+        if (progress && progress.totalPages > 0) {
           setCurrentPage(progress.currentPage);
+          currentPageRef.current = progress.currentPage;
           setTotalPages(progress.totalPages);
-          if (loadedSettings.isRTL && loadedSettings.isHorizontal && progress.totalPages > 0) {
-            setInitialPage(progress.totalPages - progress.currentPage);
-          } else {
-            setInitialPage(progress.currentPage + 1);
-          }
+          totalPagesRef.current = progress.totalPages;
+          const restoredInitial = (loadedSettings.isRTL && loadedSettings.isHorizontal)
+            ? (progress.totalPages - progress.currentPage)
+            : (progress.currentPage + 1);
+          setInitialPage(restoredInitial);
+        } else if (progress) {
+          setCurrentPage(progress.currentPage);
+          currentPageRef.current = progress.currentPage;
+          setInitialPage(progress.currentPage + 1);
         } else {
           setCurrentPage(0);
+          currentPageRef.current = 0;
           setInitialPage(1);
           setTotalPages(0);
         }
+        showPageIndicator();
       } catch (error) {
         console.error('[ReaderScreen] Error restoring progress and settings:', error);
       } finally {
@@ -426,7 +743,7 @@ export default function ReaderScreen({ navigation, route }: Props) {
     }
 
     restoreProgressAndSettings();
-  }, [bookId]);
+  }, [bookId, showPageIndicator]);
 
   // ─── Guardar progreso al salir (Cualquier gesto, botón físico o superior) ─
   useEffect(() => {
@@ -453,7 +770,24 @@ export default function ReaderScreen({ navigation, route }: Props) {
     return unsubscribe;
   }, [navigation]);
 
-  const handleClose = useCallback(() => {
+  const handleClose = useCallback(async () => {
+    const bId = bookIdRef.current;
+    const page = currentPageRef.current;
+    const total = totalPagesRef.current;
+
+    if (bId && total > 0) {
+      const pct = total > 1 ? (page / (total - 1)) * 100 : 100;
+      const progress: ReadingProgress = {
+        bookId: bId,
+        currentPage: page,
+        totalPages: total,
+        percentage: Math.min(100, Math.max(0, pct)),
+        lastReadAt: Date.now(),
+      };
+      await StorageService.saveProgress(progress, true);
+      await StorageService.flushProgress();
+      await useLibraryStore.getState().reloadProgress();
+    }
     navigation.goBack();
   }, [navigation]);
 
@@ -467,7 +801,8 @@ export default function ReaderScreen({ navigation, route }: Props) {
       return;
     }
     
-    setIsPdfLoaded(true);
+    setIsFileLoaded(true);
+    showPageIndicator();
     
     const bId = bookIdRef.current;
     const page = currentPageRef.current;
@@ -483,9 +818,9 @@ export default function ReaderScreen({ navigation, route }: Props) {
       };
       StorageService.saveProgress(progress);
     }
-  }, [initialPage]);
+  }, [initialPage, showPageIndicator]);
 
-  const handlePdfPageChanged = useCallback((page: number) => {
+  const handlePageChanged = useCallback((page: number) => {
     const total = totalPagesRef.current;
     const isRtlMode = settingsRef.current && settingsRef.current.isRTL && settingsRef.current.isHorizontal;
     const logicalPage = (isRtlMode && total > 0)
@@ -494,6 +829,7 @@ export default function ReaderScreen({ navigation, route }: Props) {
 
     setCurrentPage(logicalPage);
     currentPageRef.current = logicalPage;
+    showPageIndicator();
     
     const bId = bookIdRef.current;
     
@@ -509,19 +845,49 @@ export default function ReaderScreen({ navigation, route }: Props) {
       };
       StorageService.saveProgress(progress);
     }
-  }, []);
+  }, [showPageIndicator]);
 
+  const handleComicPageChanged = useCallback((pageNumber: number) => {
+    const logicalPage = Math.max(0, pageNumber - 1);
+    const total = totalPagesRef.current;
+
+    setCurrentPage(logicalPage);
+    currentPageRef.current = logicalPage;
+    showPageIndicator();
+
+    const bId = bookIdRef.current;
+    if (bId && total > 0) {
+      const pct = total > 1 ? (logicalPage / (total - 1)) * 100 : 100;
+      const progress: ReadingProgress = {
+        bookId: bId,
+        currentPage: logicalPage,
+        totalPages: total,
+        percentage: Math.min(100, Math.max(0, pct)),
+        lastReadAt: Date.now(),
+      };
+      StorageService.saveProgress(progress);
+    }
+  }, [showPageIndicator]);
 
   const updateSettings = useCallback(async (newSettings: BookSettings) => {
+    const prev = settingsRef.current;
     setSettings(newSettings);
-    if (totalPages > 0) {
-      const physicalPage = newSettings.isRTL && newSettings.isHorizontal
-        ? totalPages - currentPage
-        : currentPage + 1;
-      setInitialPage(physicalPage);
+    settingsRef.current = newSettings;
+
+    // Solo si cambia la orientación horizontal o dirección RTL recalculamos initialPage
+    const isDirectionOrAxisChanged = !prev || (prev.isHorizontal !== newSettings.isHorizontal) || (prev.isRTL !== newSettings.isRTL);
+    if (isDirectionOrAxisChanged) {
+      const total = totalPagesRef.current;
+      const curPage = currentPageRef.current;
+      if (total > 0) {
+        const physicalPage = newSettings.isRTL && newSettings.isHorizontal
+          ? total - curPage
+          : curPage + 1;
+        setInitialPage(physicalPage);
+      }
     }
     await StorageService.saveBookSettings(bookId, newSettings);
-  }, [bookId, currentPage, totalPages]);
+  }, [bookId]);
 
   const handleResetProgress = useCallback(async () => {
     Alert.alert(
@@ -533,6 +899,7 @@ export default function ReaderScreen({ navigation, route }: Props) {
           text: 'Sí, reiniciar',
           onPress: async () => {
             setCurrentPage(0);
+            currentPageRef.current = 0;
             const isRtl = settings && settings.isRTL && settings.isHorizontal;
             const targetPhysicalPage = (isRtl && totalPages > 0) ? totalPages : 1;
             
@@ -570,6 +937,7 @@ export default function ReaderScreen({ navigation, route }: Props) {
     }
     const logicalPage = pageNum - 1;
     setCurrentPage(logicalPage);
+    currentPageRef.current = logicalPage;
     
     const isRtl = settings && settings.isRTL && settings.isHorizontal;
     const targetPhysicalPage = (isRtl && totalPages > 0) ? totalPages - logicalPage : pageNum;
@@ -601,7 +969,7 @@ export default function ReaderScreen({ navigation, route }: Props) {
       <StatusBar hidden />
 
       {/* Zona táctil superior invisible (7% del alto de la pantalla) para abrir el menú */}
-      {!showMenu && isPdfLoaded && (
+      {!showMenu && isFileLoaded && (
         <TouchableOpacity
           style={styles.menuTriggerZone}
           onPress={() => setShowMenu(true)}
@@ -609,11 +977,27 @@ export default function ReaderScreen({ navigation, route }: Props) {
         />
       )}
 
-      {/* Área de lectura - Motor nativo react-native-pdf con renderizado C++ Pdfium de alta nitidez */}
+      {/* Área de lectura - Motor de imágenes optimizado a 60 FPS */}
       {isPreparingFile ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={COLORS.accent} />
           <Text style={styles.loadingText}>Cargando...</Text>
+        </View>
+      ) : comicPages.length > 0 && isProgressRestored && isSettingsLoaded && settings ? (
+        <View style={{ flex: 1, width: '100%', height: '100%' }}>
+          <ComicImageViewer
+            key={`viewer_${settings.isHorizontal}_${settings.usePaging}_${settings.fitMode}_${settings.isRTL}`}
+            pages={comicPages}
+            initialPage={initialPage}
+            isHorizontal={settings.isHorizontal}
+            usePaging={settings.usePaging}
+            isRTL={settings.isRTL}
+            fitMode={settings.fitMode}
+            enableDoubleTapZoom={settings.enableDoubleTapZoom}
+            onPageChanged={handleComicPageChanged}
+            screenWidth={W}
+            screenHeight={H}
+          />
         </View>
       ) : isPdfSupported && localPdfUri && isProgressRestored && isSettingsLoaded && settings ? (() => {
         const pdfSourceUri = Platform.OS === 'android' ? localPdfUri.replace('file://', '') : localPdfUri;
@@ -621,10 +1005,10 @@ export default function ReaderScreen({ navigation, route }: Props) {
         return (
           <View style={{ flex: 1, width: '100%', height: '100%' }}>
             <PdfComponent
-              key={`pdf_${settings.isHorizontal}_${settings.usePaging}_${settings.fitMode}_${settings.isRTL}_${initialPage}`}
+              key={`pdf_${settings.isHorizontal}_${settings.usePaging}_${settings.fitMode}_${settings.isRTL}`}
               source={{ uri: pdfSourceUri, cache: true }}
               page={initialPage}
-              onPageChanged={handlePdfPageChanged}
+              onPageChanged={handlePageChanged}
               onLoadComplete={handlePdfLoadComplete}
               style={[styles.pdfView, { width: W, height: H }]}
               enableAntialiasing={true}
@@ -644,28 +1028,29 @@ export default function ReaderScreen({ navigation, route }: Props) {
         );
       })() : null}
 
-      {/* Indicador de carga discreto de emergencia si aun no hay Uri */}
-      {!localPdfUri && (
+      {/* Indicador de carga discreto de emergencia */}
+      {(comicPages.length === 0 && !localPdfUri) && (
         <View style={styles.loadingOverlay}>
           <ActivityIndicator size="large" color={COLORS.accent} />
         </View>
       )}
 
-      {/* Menú superior que aparece con doble toque */}
+      {/* Menú superior que aparece al tocar arriba */}
       {showMenu && (
         <View style={styles.topMenu}>
-          <TouchableOpacity style={styles.menuButton} onPress={handleClose}>
+          <TouchableOpacity style={[styles.menuButton, { flexDirection: 'row', alignItems: 'center', gap: 6 }]} onPress={handleClose}>
+            <BackIcon size={16} color="#FFFFFF" />
             <Text style={styles.menuButtonText}>Volver</Text>
           </TouchableOpacity>
           <Text style={styles.menuTitle} numberOfLines={1}>
             {currentBook?.title}
           </Text>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
             <TouchableOpacity onPress={() => setShowOptionsModal(true)} style={{ padding: 6 }}>
-              <Text style={{ color: '#FFFFFF', fontSize: 22, fontWeight: '300' }}>⚙</Text>
+              <GearIcon size={20} color="#FFFFFF" />
             </TouchableOpacity>
             <TouchableOpacity onPress={() => setShowMenu(false)} style={{ padding: 6 }}>
-              <Text style={{ color: '#FFFFFF', fontSize: 22, fontWeight: '300' }}>✕</Text>
+              <CloseIcon size={20} color="#FFFFFF" />
             </TouchableOpacity>
           </View>
         </View>
@@ -864,13 +1249,21 @@ export default function ReaderScreen({ navigation, route }: Props) {
         </TouchableWithoutFeedback>
       </Modal>
 
-      {/* Indicador de página (sutil, esquina inferior) */}
-      {totalPages > 0 && isPdfLoaded && (
-        <View style={styles.pageIndicator}>
-          <Text style={styles.pageText}>
-            {currentPage + 1} / {totalPages}
-          </Text>
-        </View>
+      {/* Indicador de página flotante con auto-ocultado tras 1.5s y alto contraste */}
+      {totalPages > 0 && isFileLoaded && (
+        <Animated.View
+          style={[
+            styles.pageIndicatorContainer,
+            { opacity: pageIndicatorOpacity },
+          ]}
+          pointerEvents="none"
+        >
+          <View style={styles.pageIndicatorPill}>
+            <Text style={styles.pageIndicatorText}>
+              {currentPage + 1} / {totalPages}
+            </Text>
+          </View>
+        </Animated.View>
       )}
 
       {/* Filtro nocturno / Dimmer overlay */}
@@ -1131,8 +1524,37 @@ const styles = StyleSheet.create({
     top: 0,
     left: 0,
     right: 0,
-    height: '7%',
+    height: 70,
     zIndex: 999,
     backgroundColor: 'transparent',
+  },
+  pageIndicatorContainer: {
+    position: 'absolute',
+    bottom: 56, // Elevado para quedar libre de la barra de navegación del sistema y botones en tablets
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 998,
+  },
+  pageIndicatorPill: {
+    backgroundColor: 'rgba(12, 12, 22, 0.90)',
+    paddingHorizontal: 18,
+    paddingVertical: 8,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.6,
+    shadowRadius: 8,
+    elevation: 10,
+  },
+  pageIndicatorText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+    textAlign: 'center',
   },
 });

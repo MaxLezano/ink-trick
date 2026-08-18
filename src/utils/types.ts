@@ -4,7 +4,7 @@
  */
 
 // ─── Formato soportado ─────────────────────────────────────────────────────
-export type SupportedFormat = '.pdf';
+export type SupportedFormat = '.pdf' | '.cbr' | '.cbz';
 
 // ─── Archivo de libro ──────────────────────────────────────────────────────
 export interface BookFile {
@@ -15,6 +15,7 @@ export interface BookFile {
   format: SupportedFormat;
   fileSize: number;
   coverUri?: string;
+  coverPage?: number;     // Página seleccionada como portada (1-indexed)
   author?: string;
   addedAt: number;        // timestamp
   lastOpenedAt?: number;  // timestamp

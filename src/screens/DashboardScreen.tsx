@@ -27,6 +27,17 @@ import PdfThumbnail from 'react-native-pdf-thumbnail';
 import { RootStackParamList, BookFile } from '../utils/types';
 import { useLibraryStore } from '../store/libraryStore';
 import { COLORS, GRID_COLUMNS_MOBILE, GRID_COLUMNS_TABLET, TABLET_BREAKPOINT } from '../utils/constants';
+import * as ComicService from '../services/comicService';
+import * as BookPreloadService from '../services/bookPreloadService';
+import {
+  StarIcon,
+  CheckDoneIcon,
+  ImageIcon,
+  FolderIcon,
+  TrashIcon,
+  CloseIcon,
+  RefreshIcon,
+} from '../components/Icons';
 
 let PdfComponent: any = null;
 let isPdfSupported = false;
@@ -45,31 +56,6 @@ interface Props {
   navigation: DashboardNavigationProp;
 }
 
-const TrashIcon = ({ color = '#FFFFFF' }: { color?: string }) => {
-  return (
-    <View style={{ width: 18, height: 20, alignItems: 'center', justifyContent: 'center' }}>
-      <View style={{ width: 6, height: 1.5, backgroundColor: color, borderTopLeftRadius: 1, borderTopRightRadius: 1, marginBottom: 1 }} />
-      <View style={{ width: 14, height: 1.5, backgroundColor: color, borderRadius: 0.8, marginBottom: 2 }} />
-      <View style={{
-        width: 11,
-        height: 10,
-        borderWidth: 1.5,
-        borderColor: color,
-        borderTopWidth: 0,
-        borderBottomLeftRadius: 2,
-        borderBottomRightRadius: 2,
-        flexDirection: 'row',
-        justifyContent: 'space-evenly',
-        alignItems: 'center',
-        paddingVertical: 1,
-      }}>
-        <View style={{ width: 1.2, height: 5, backgroundColor: color, borderRadius: 0.5 }} />
-        <View style={{ width: 1.2, height: 5, backgroundColor: color, borderRadius: 0.5 }} />
-      </View>
-    </View>
-  );
-};
-
 export default function DashboardScreen({ navigation }: Props) {
   const { width } = useWindowDimensions();
   const isTablet = width >= TABLET_BREAKPOINT;
@@ -86,7 +72,9 @@ export default function DashboardScreen({ navigation }: Props) {
     addFolderAndIndex,
     refreshLibrary,
     updateLastOpened,
+    updateBookCover,
     toggleFavoriteBatch,
+    markAsReadBatch,
     deleteBooksBatch,
     assignFolderBatch,
     toggleFolder,
@@ -101,13 +89,21 @@ export default function DashboardScreen({ navigation }: Props) {
   // Estados de multiselección y agrupamiento
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedBookIds, setSelectedBookIds] = useState<string[]>([]);
+  const [isOptionsMenuVisible, setIsOptionsMenuVisible] = useState(false);
   const [isFolderModalVisible, setIsFolderModalVisible] = useState(false);
   const [isFoldersModalVisible, setIsFoldersModalVisible] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   
+  // Estados para modal de Cambiar Portada
+  const [isCoverModalVisible, setIsCoverModalVisible] = useState(false);
+  const [coverPageInput, setCoverPageInput] = useState('1');
+  const [isCoverLoading, setIsCoverLoading] = useState(false);
+  const [coverPreviewUri, setCoverPreviewUri] = useState<string | null>(null);
+
   // Estado de preparación de caché en lobby
   const [preparingBookId, setPreparingBookId] = useState<string | null>(null);
   const [preparingTitle, setPreparingTitle] = useState<string | null>(null);
+  const [preloadProgress, setPreloadProgress] = useState<BookPreloadService.PreloadProgress | null>(null);
 
   // Sección de detalle activa (null = Home, 'recent' | 'favorites' | folderName = Detail)
   const [activeDetailSection, setActiveDetailSection] = useState<string | null>(null);
@@ -202,38 +198,50 @@ export default function DashboardScreen({ navigation }: Props) {
         await updateLastOpened(book.id);
         setPreparingBookId(book.id);
         setPreparingTitle(book.title);
+        setPreloadProgress(null);
 
         const path = book.filePath;
         let finalPath = path;
 
         try {
-          // Pre-copiamos el libro al directorio de caché seguro de la app si es necesario
-          const safeFileName = `${book.id}.pdf`;
-          const tempUri = `${FileSystem.cacheDirectory}${safeFileName}`;
-
-          const info = await FileSystem.getInfoAsync(tempUri);
-          if (!info.exists) {
-            console.log('[DashboardScreen] Pre-loading book to cache:', tempUri);
-            await FileSystem.copyAsync({
-              from: path,
-              to: tempUri,
+          if (book.format === '.cbr' || book.format === '.cbz') {
+            // Precargar el 100% de páginas del cómic con barra de progreso en vivo
+            await BookPreloadService.preloadBook(book, (prog) => {
+              setPreloadProgress(prog);
             });
+            navigation.navigate('Reader', { bookId: book.id });
+          } else {
+            // Pre-copiamos el PDF al directorio de caché seguro de la app si es content://
+            if (path.startsWith('content://')) {
+              const safeFileName = `${book.id}.pdf`;
+              const tempUri = `${FileSystem.cacheDirectory}${safeFileName}`;
+
+              const info = await FileSystem.getInfoAsync(tempUri);
+              if (!info.exists) {
+                console.log('[DashboardScreen] Pre-loading PDF to local cache:', tempUri);
+                await FileSystem.copyAsync({
+                  from: path,
+                  to: tempUri,
+                });
+              }
+              finalPath = tempUri;
+            }
+
+            // Pre-extraer conteo nativo e inicializar la caché de lectura
+            const cleanPath = Platform.OS === 'android' ? finalPath.replace('file://', '') : finalPath;
+            try {
+              await (PdfThumbnail as any).getPageCount(cleanPath);
+            } catch (e) {}
+
+            navigation.navigate('Reader', { bookId: book.id, preparedPath: finalPath });
           }
-          finalPath = tempUri;
-
-          // Pre-extraer conteo nativo e inicializar la caché de lectura
-          const cleanPath = Platform.OS === 'android' ? tempUri.replace('file://', '') : tempUri;
-          try {
-            await (PdfThumbnail as any).getPageCount(cleanPath);
-          } catch (e) {}
-
-          navigation.navigate('Reader', { bookId: book.id, preparedPath: finalPath });
         } catch (err) {
-          console.error('[DashboardScreen] Error pre-loading book cache:', err);
+          console.error('[DashboardScreen] Error preparing book:', err);
           navigation.navigate('Reader', { bookId: book.id, preparedPath: path });
         } finally {
           setPreparingBookId(null);
           setPreparingTitle(null);
+          setPreloadProgress(null);
         }
       }
     },
@@ -253,16 +261,61 @@ export default function DashboardScreen({ navigation }: Props) {
   const cancelSelection = useCallback(() => {
     setIsSelectionMode(false);
     setSelectedBookIds([]);
+    setIsOptionsMenuVisible(false);
   }, []);
 
   const handleToggleFavoriteBatch = useCallback(async () => {
     if (selectedBookIds.length === 0) return;
+    setIsOptionsMenuVisible(false);
     await toggleFavoriteBatch(selectedBookIds);
     cancelSelection();
   }, [selectedBookIds, toggleFavoriteBatch, cancelSelection]);
 
+  const handleMarkAsReadBatch = useCallback(async () => {
+    if (selectedBookIds.length === 0) return;
+    setIsOptionsMenuVisible(false);
+    await markAsReadBatch(selectedBookIds);
+    cancelSelection();
+  }, [selectedBookIds, markAsReadBatch, cancelSelection]);
+
+  const handleOpenCoverModal = useCallback(() => {
+    if (selectedBookIds.length !== 1) return;
+    const targetBook = books.find(b => b.id === selectedBookIds[0]);
+    if (!targetBook) return;
+    setCoverPreviewUri(targetBook.coverUri || null);
+    setCoverPageInput(targetBook.coverPage ? targetBook.coverPage.toString() : '1');
+    setIsOptionsMenuVisible(false);
+    setIsCoverModalVisible(true);
+  }, [selectedBookIds, books]);
+
+  const handleSaveCover = useCallback(async () => {
+    if (selectedBookIds.length !== 1) return;
+    const page = parseInt(coverPageInput, 10);
+    if (isNaN(page) || page < 1) {
+      Alert.alert('Número de página inválido', 'Por favor ingresa un número de página mayor o igual a 1.');
+      return;
+    }
+
+    setIsCoverLoading(true);
+    try {
+      const newUri = await updateBookCover(selectedBookIds[0], page);
+      if (newUri) {
+        setCoverPreviewUri(newUri);
+        setIsCoverModalVisible(false);
+        cancelSelection();
+      } else {
+        Alert.alert('Error', 'No se pudo extraer la portada de la página especificada. Verifica que la página exista en el documento.');
+      }
+    } catch (err) {
+      Alert.alert('Error', 'Ocurrió un error al generar la nueva portada.');
+    } finally {
+      setIsCoverLoading(false);
+    }
+  }, [selectedBookIds, coverPageInput, updateBookCover, cancelSelection]);
+
   const handleDeleteBatch = useCallback(() => {
     if (selectedBookIds.length === 0) return;
+    setIsOptionsMenuVisible(false);
     Alert.alert(
       'Eliminar libros',
       `¿Estás seguro de que deseas eliminar los ${selectedBookIds.length} libros seleccionados de tu biblioteca?`,
@@ -352,7 +405,9 @@ export default function DashboardScreen({ navigation }: Props) {
             />
           ) : (
             <View style={styles.formatPlaceholder}>
-              <Text style={[styles.formatBadge, { color: '#FFFFFF' }]}>PDF</Text>
+              <Text style={[styles.formatBadge, { color: '#FFFFFF' }]}>
+                {item.format ? item.format.replace('.', '').toUpperCase() : 'MANGA'}
+              </Text>
             </View>
           )}
 
@@ -377,7 +432,13 @@ export default function DashboardScreen({ navigation }: Props) {
           {preparingBookId === item.id && (
             <View style={styles.cardLoadingOverlay}>
               <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 6 }} />
-              <Text style={styles.cardLoadingText}>Abriendo...</Text>
+              <Text style={styles.cardLoadingText} numberOfLines={1}>
+                {preloadProgress && preloadProgress.total > 0
+                  ? `Cargando ${preloadProgress.percentage}%`
+                  : preloadProgress && preloadProgress.current > 0
+                  ? `Pág. ${preloadProgress.current}...`
+                  : 'Abriendo...'}
+              </Text>
             </View>
           )}
         </View>
@@ -427,6 +488,10 @@ export default function DashboardScreen({ navigation }: Props) {
           keyExtractor={item => `${key}_${item.id}`}
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.carouselListContent}
+          initialNumToRender={5}
+          maxToRenderPerBatch={6}
+          windowSize={5}
+          removeClippedSubviews={Platform.OS === 'android'}
         />
       </View>
     );
@@ -478,14 +543,23 @@ export default function DashboardScreen({ navigation }: Props) {
           <Text style={[styles.headerTitle, { color: COLORS.text, fontSize: 18 }]}>
             {selectedBookIds.length} seleccionados
           </Text>
-          <TouchableOpacity
-            style={[styles.cancelButton, { borderColor: COLORS.border }]}
-            onPress={cancelSelection}
-          >
-            <Text style={[styles.cancelButtonText, { color: COLORS.accent }]}>
-              Cancelar
-            </Text>
-          </TouchableOpacity>
+          <View style={styles.selectionHeaderActions}>
+            <TouchableOpacity
+              style={[styles.cancelButton, { borderColor: COLORS.border }]}
+              onPress={cancelSelection}
+            >
+              <Text style={[styles.cancelButtonText, { color: COLORS.accent }]}>
+                Cancelar
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.moreMenuButton, { borderColor: COLORS.border, backgroundColor: COLORS.background }]}
+              onPress={() => setIsOptionsMenuVisible(true)}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.moreMenuIcon, { color: COLORS.text }]}>⋮</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       ) : (
         <View style={[styles.header, { borderBottomColor: COLORS.border }]}>
@@ -494,22 +568,56 @@ export default function DashboardScreen({ navigation }: Props) {
           </Text>
           <View style={styles.headerButtonsRow}>
             <TouchableOpacity
-              style={[styles.scanButton, { backgroundColor: COLORS.surface, borderColor: COLORS.border, borderWidth: 1, marginRight: 8 }]}
+              style={[
+                styles.scanButton,
+                {
+                  backgroundColor: COLORS.surface,
+                  borderColor: COLORS.border,
+                  borderWidth: 1,
+                  marginRight: 8,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 6,
+                  opacity: isScanning ? 0.6 : 1,
+                },
+              ]}
               onPress={handleScan}
               disabled={isScanning}
             >
+              <FolderIcon size={16} color={COLORS.text} />
               <Text style={[styles.scanButtonText, { color: COLORS.text }]}>
-                ⊞ Escanear
+                Escanear
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.scanButton, { backgroundColor: COLORS.accent, opacity: scannedFolders.some(f => f.enabled) ? 1 : 0.5 }]}
+              style={[
+                styles.scanButton,
+                {
+                  backgroundColor: COLORS.accent,
+                  opacity: (isScanning || !scannedFolders.some(f => f.enabled)) ? 0.6 : 1,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 6,
+                },
+              ]}
               onPress={refreshLibrary}
               disabled={isScanning || !scannedFolders.some(f => f.enabled)}
             >
-              <Text style={[styles.scanButtonText, { color: '#0A0A0A' }]}>
-                ↻ Actualizar
-              </Text>
+              {isScanning ? (
+                <>
+                  <ActivityIndicator size="small" color="#0A0A0A" />
+                  <Text style={[styles.scanButtonText, { color: '#0A0A0A' }]}>
+                    Actualizando...
+                  </Text>
+                </>
+              ) : (
+                <>
+                  <RefreshIcon size={16} color="#0A0A0A" />
+                  <Text style={[styles.scanButtonText, { color: '#0A0A0A' }]}>
+                    Actualizar
+                  </Text>
+                </>
+              )}
             </TouchableOpacity>
           </View>
         </View>
@@ -699,43 +807,185 @@ export default function DashboardScreen({ navigation }: Props) {
               key={`books_${numColumns}`}
               contentContainerStyle={[
                 styles.listContent,
-                { paddingBottom: isSelectionMode ? 100 : 20 },
+                { paddingBottom: 40 },
               ]}
               columnWrapperStyle={numColumns > 1 ? styles.row : undefined}
               showsVerticalScrollIndicator={false}
+              initialNumToRender={8}
+              maxToRenderPerBatch={10}
+              windowSize={7}
+              removeClippedSubviews={Platform.OS === 'android'}
             />
           )}
         </View>
       )}
 
-      {/* Barra de acciones flotante en lote */}
-      {isSelectionMode && (
-        <View style={[styles.floatingActionBar, { backgroundColor: COLORS.surface, borderColor: COLORS.border }]}>
-          <TouchableOpacity
-            style={styles.actionButton}
-            onPress={handleToggleFavoriteBatch}
-          >
-            <Text style={styles.actionButtonIcon}>★</Text>
-            <Text style={[styles.actionButtonText, { color: COLORS.text }]}>Favorito</Text>
-          </TouchableOpacity>
+      {/* Menú desplegable de opciones (3 puntos) */}
+      <Modal
+        animationType="fade"
+        transparent={true}
+        visible={isOptionsMenuVisible}
+        onRequestClose={() => setIsOptionsMenuVisible(false)}
+      >
+        <TouchableOpacity
+          style={styles.optionsModalBackdrop}
+          activeOpacity={1}
+          onPress={() => setIsOptionsMenuVisible(false)}
+        >
+          <View style={[styles.optionsMenuCard, { backgroundColor: COLORS.surface, borderColor: COLORS.border }]}>
+            <TouchableOpacity
+              style={[styles.optionsMenuItem, { borderBottomColor: COLORS.border + '60' }]}
+              onPress={handleToggleFavoriteBatch}
+              activeOpacity={0.7}
+            >
+              <View style={{ width: 28, alignItems: 'center', justifyContent: 'center' }}>
+                <StarIcon size={19} color={COLORS.text} />
+              </View>
+              <Text style={[styles.optionsMenuItemText, { color: COLORS.text }]}>
+                Favorito
+              </Text>
+            </TouchableOpacity>
 
-          <TouchableOpacity
-            style={styles.actionButton}
-            onPress={() => setIsFolderModalVisible(true)}
-          >
-            <Text style={styles.actionButtonIcon}>⊞</Text>
-            <Text style={[styles.actionButtonText, { color: COLORS.text }]}>Agrupar</Text>
-          </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.optionsMenuItem, { borderBottomColor: COLORS.border + '60' }]}
+              onPress={handleMarkAsReadBatch}
+              activeOpacity={0.7}
+            >
+              <View style={{ width: 28, alignItems: 'center', justifyContent: 'center' }}>
+                <CheckDoneIcon size={20} color={COLORS.text} />
+              </View>
+              <Text style={[styles.optionsMenuItemText, { color: COLORS.text }]}>
+                Marcar como leído
+              </Text>
+            </TouchableOpacity>
 
-          <TouchableOpacity
-            style={styles.actionButton}
-            onPress={handleDeleteBatch}
-          >
-            <TrashIcon color={COLORS.text} />
-            <Text style={[styles.actionButtonText, { color: COLORS.text, marginTop: 4 }]}>Eliminar</Text>
-          </TouchableOpacity>
+            {selectedBookIds.length === 1 && (
+              <TouchableOpacity
+                style={[styles.optionsMenuItem, { borderBottomColor: COLORS.border + '60' }]}
+                onPress={handleOpenCoverModal}
+                activeOpacity={0.7}
+              >
+                <View style={{ width: 28, alignItems: 'center', justifyContent: 'center' }}>
+                  <ImageIcon size={19} color={COLORS.text} />
+                </View>
+                <Text style={[styles.optionsMenuItemText, { color: COLORS.text }]}>
+                  Cambiar portada
+                </Text>
+              </TouchableOpacity>
+            )}
+
+            <TouchableOpacity
+              style={[styles.optionsMenuItem, { borderBottomColor: COLORS.border + '60' }]}
+              onPress={() => {
+                setIsOptionsMenuVisible(false);
+                setIsFolderModalVisible(true);
+              }}
+              activeOpacity={0.7}
+            >
+              <View style={{ width: 28, alignItems: 'center', justifyContent: 'center' }}>
+                <FolderIcon size={19} color={COLORS.text} />
+              </View>
+              <Text style={[styles.optionsMenuItemText, { color: COLORS.text }]}>
+                Agrupar
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.optionsMenuItem, { borderBottomWidth: 0 }]}
+              onPress={handleDeleteBatch}
+              activeOpacity={0.7}
+            >
+              <View style={{ width: 28, alignItems: 'center', justifyContent: 'center' }}>
+                <TrashIcon size={19} color="#FF4D4D" />
+              </View>
+              <Text style={[styles.optionsMenuItemText, { color: '#FF4D4D' }]}>
+                Eliminar
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Modal para Cambiar Portada */}
+      <Modal
+        animationType="fade"
+        transparent={true}
+        visible={isCoverModalVisible}
+        onRequestClose={() => {
+          if (!isCoverLoading) setIsCoverModalVisible(false);
+        }}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { backgroundColor: COLORS.surface, borderColor: COLORS.border }]}>
+            <Text style={[styles.modalTitle, { color: COLORS.text }]}>
+              Cambiar Portada
+            </Text>
+            <Text style={[styles.modalSubtitle, { color: COLORS.text + '80' }]}>
+              Ingresa el número de página que deseas utilizar como portada para este libro:
+            </Text>
+
+            {/* Vista previa de la portada actual */}
+            {coverPreviewUri ? (
+              <View style={styles.coverPreviewContainer}>
+                <Image
+                  source={{ uri: coverPreviewUri }}
+                  style={styles.coverPreviewImage}
+                  resizeMode="cover"
+                />
+              </View>
+            ) : null}
+
+            <View style={{ width: '100%', marginBottom: 8 }}>
+              <Text style={[styles.modalSectionLabel, { color: COLORS.text + '70', fontSize: 12, fontWeight: '700', marginBottom: 6, textTransform: 'uppercase' }]}>
+                Número de página:
+              </Text>
+              <TextInput
+                style={[styles.modalInput, { color: COLORS.text, borderColor: COLORS.border, backgroundColor: COLORS.background, textAlign: 'center', fontSize: 18, fontWeight: '700' }]}
+                value={coverPageInput}
+                onChangeText={setCoverPageInput}
+                placeholder="1"
+                placeholderTextColor={COLORS.text + '40'}
+                keyboardType="numeric"
+                editable={!isCoverLoading}
+              />
+            </View>
+
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={[styles.modalButton, styles.modalCancelButton]}
+                disabled={isCoverLoading}
+                onPress={() => setIsCoverModalVisible(false)}
+              >
+                <Text style={[styles.modalButtonText, { color: COLORS.text }]}>
+                  Cancelar
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.modalButton,
+                  styles.modalConfirmButton,
+                  { backgroundColor: COLORS.accent, opacity: isCoverLoading ? 0.6 : 1 },
+                ]}
+                disabled={isCoverLoading}
+                onPress={handleSaveCover}
+              >
+                {isCoverLoading ? (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <ActivityIndicator size="small" color="#0A0A0A" />
+                    <Text style={[styles.modalButtonText, { color: '#0A0A0A' }]}>
+                      Generando...
+                    </Text>
+                  </View>
+                ) : (
+                  <Text style={[styles.modalButtonText, { color: '#0A0A0A' }]}>
+                    Guardar
+                  </Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
         </View>
-      )}
+      </Modal>
 
       {/* Modal para agrupar libros en colecciones/carpetas */}
       <Modal
@@ -834,17 +1084,26 @@ export default function DashboardScreen({ navigation }: Props) {
                 onPress={() => setIsFoldersModalVisible(false)}
                 style={styles.foldersCloseButton}
               >
-                <Text style={{ color: '#FFFFFF', fontSize: 20, fontWeight: '300' }}>✕</Text>
+                <CloseIcon size={20} color={COLORS.text} />
               </TouchableOpacity>
             </View>
             <Text style={[styles.modalSubtitle, { color: COLORS.text + '80', marginTop: 4, marginBottom: 16 }]}>
               Selecciona las carpetas activas de las que deseas importar mangas a tu biblioteca:
             </Text>
 
-            {scannedFolders.length === 0 ? (
+            {isScanning && (
+              <View style={styles.modalScanningBanner}>
+                <ActivityIndicator size="small" color={COLORS.accent} style={{ marginRight: 10 }} />
+                <Text style={[styles.modalScanningText, { color: COLORS.text }]}>
+                  Escaneando e indexando mangas...
+                </Text>
+              </View>
+            )}
+
+            {scannedFolders.length === 0 && !isScanning ? (
               <View style={styles.foldersEmptyContainer}>
-                <Text style={styles.foldersEmptyIcon}>⊞</Text>
-                <Text style={[styles.foldersEmptyText, { color: COLORS.text }]}>
+                <FolderIcon size={38} color={COLORS.text + '50'} />
+                <Text style={[styles.foldersEmptyText, { color: COLORS.text, marginTop: 8 }]}>
                   No hay carpetas agregadas
                 </Text>
               </View>
@@ -869,7 +1128,7 @@ export default function DashboardScreen({ navigation }: Props) {
                           },
                         ]}
                       >
-                        {folder.enabled && <Text style={styles.checkboxCheckSymbol}>✓</Text>}
+                        {folder.enabled && <Text style={{ color: '#0A0A0A', fontSize: 12, fontWeight: '900' }}>✓</Text>}
                       </View>
                       <View style={{ flex: 1, marginLeft: 12 }}>
                         <Text style={[styles.folderRowName, { color: COLORS.text }]} numberOfLines={1}>
@@ -895,7 +1154,7 @@ export default function DashboardScreen({ navigation }: Props) {
                       }}
                       style={styles.folderRowDelete}
                     >
-                      <TrashIcon color={COLORS.text} />
+                      <TrashIcon size={18} color={COLORS.text + '90'} />
                     </TouchableOpacity>
                   </View>
                 ))}
@@ -904,17 +1163,44 @@ export default function DashboardScreen({ navigation }: Props) {
 
             <View style={[styles.modalButtons, { marginTop: 16 }]}>
               <TouchableOpacity
-                style={[styles.foldersAddButton, { backgroundColor: COLORS.surface, borderColor: COLORS.border, borderWidth: 1 }]}
+                style={[
+                  styles.foldersAddButton,
+                  {
+                    backgroundColor: COLORS.surface,
+                    borderColor: COLORS.border,
+                    borderWidth: 1,
+                    opacity: isScanning ? 0.6 : 1,
+                  },
+                ]}
+                disabled={isScanning}
                 onPress={async () => {
                   await addFolderAndIndex();
                 }}
               >
-                <Text style={[styles.foldersAddButtonText, { color: COLORS.text }]}>
-                  + Agregar carpeta
-                </Text>
+                {isScanning ? (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+                    <ActivityIndicator size="small" color={COLORS.accent} />
+                    <Text style={[styles.foldersAddButtonText, { color: COLORS.text }]}>
+                      Cargando...
+                    </Text>
+                  </View>
+                ) : (
+                  <Text style={[styles.foldersAddButtonText, { color: COLORS.text }]}>
+                    + Agregar carpeta
+                  </Text>
+                )}
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.modalButton, styles.modalConfirmButton, { backgroundColor: COLORS.accent, flex: 0.8 }]}
+                style={[
+                  styles.modalButton,
+                  styles.modalConfirmButton,
+                  {
+                    backgroundColor: COLORS.accent,
+                    flex: 0.8,
+                    opacity: isScanning ? 0.5 : 1,
+                  },
+                ]}
+                disabled={isScanning}
                 onPress={() => setIsFoldersModalVisible(false)}
               >
                 <Text style={[styles.modalButtonText, { color: '#0A0A0A' }]}>
@@ -922,6 +1208,38 @@ export default function DashboardScreen({ navigation }: Props) {
                 </Text>
               </TouchableOpacity>
             </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Modal HUD de Precarga 100% para Tomos Grandes */}
+      <Modal
+        animationType="fade"
+        transparent={true}
+        visible={!!preparingBookId && !!preloadProgress && preloadProgress.total > 1}
+      >
+        <View style={styles.preloadModalOverlay}>
+          <View style={[styles.preloadModalContent, { backgroundColor: COLORS.surface, borderColor: COLORS.border }]}>
+            <ActivityIndicator size="large" color={COLORS.accent} style={{ marginBottom: 14 }} />
+            <Text style={[styles.preloadModalTitle, { color: COLORS.text }]} numberOfLines={1}>
+              {preparingTitle}
+            </Text>
+            <Text style={[styles.preloadModalSubtitle, { color: COLORS.text + '80' }]}>
+              Optimizando páginas para lectura fluida a 60 FPS...
+            </Text>
+
+            <View style={styles.preloadProgressBarContainer}>
+              <View
+                style={[
+                  styles.preloadProgressBarFill,
+                  { backgroundColor: COLORS.accent, width: `${preloadProgress?.percentage || 0}%` },
+                ]}
+              />
+            </View>
+
+            <Text style={[styles.preloadProgressStats, { color: COLORS.text }]}>
+              {preloadProgress?.current || 0} de {preloadProgress?.total || 0} páginas ({preloadProgress?.percentage || 0}%)
+            </Text>
           </View>
         </View>
       </Modal>
@@ -1128,39 +1446,66 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '900',
   },
-  floatingActionBar: {
-    position: 'absolute',
-    bottom: 24,
-    left: 20,
-    right: 20,
-    height: 68,
-    borderRadius: 34,
-    borderWidth: 1,
+  selectionHeaderActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-around',
-    paddingHorizontal: 16,
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.15,
-    shadowRadius: 10,
-    elevation: 8,
+    gap: 8,
   },
-  actionButton: {
+  moreMenuButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    flexDirection: 'column',
-    width: 80,
   },
-  actionButtonIcon: {
-    fontSize: 22,
-    marginBottom: 2,
-    color: '#F0F0F0',
+  moreMenuIcon: {
+    fontSize: 20,
+    fontWeight: '800',
+    lineHeight: 22,
   },
-  actionButtonText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#F0F0F0',
+  optionsModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+    justifyContent: 'flex-start',
+    alignItems: 'flex-end',
+    paddingTop: 95,
+    paddingRight: 20,
+  },
+  optionsMenuCard: {
+    width: 210,
+    borderRadius: 16,
+    borderWidth: 1,
+    paddingVertical: 4,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
+    elevation: 10,
+  },
+  optionsMenuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+  },
+  optionsMenuItemIcon: {
+    fontSize: 16,
+    width: 20,
+    marginRight: 12,
+    textAlign: 'center',
+    color: COLORS.accent,
+    fontWeight: '800',
+  },
+  optionsMenuItemTrashContainer: {
+    width: 20,
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  optionsMenuItemText: {
+    fontSize: 14,
+    fontWeight: '600',
   },
   modalOverlay: {
     flex: 1,
@@ -1555,6 +1900,21 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
+  modalScanningBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginBottom: 14,
+  },
+  modalScanningText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
   existingFoldersPillsContainer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1591,5 +1951,67 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     letterSpacing: 1,
     textAlign: 'center',
+  },
+  preloadModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.82)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  preloadModalContent: {
+    width: '100%',
+    maxWidth: 360,
+    borderRadius: 20,
+    borderWidth: 1,
+    padding: 24,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.5,
+    shadowRadius: 20,
+    elevation: 15,
+  },
+  preloadModalTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+    textAlign: 'center',
+    marginBottom: 6,
+  },
+  preloadModalSubtitle: {
+    fontSize: 12,
+    fontWeight: '500',
+    textAlign: 'center',
+    marginBottom: 20,
+    lineHeight: 16,
+  },
+  preloadProgressBarContainer: {
+    width: '100%',
+    height: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 4,
+    overflow: 'hidden',
+    marginBottom: 12,
+  },
+  preloadProgressBarFill: {
+    height: '100%',
+    borderRadius: 4,
+  },
+  preloadProgressStats: {
+    fontSize: 13,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  coverPreviewContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginVertical: 12,
+  },
+  coverPreviewImage: {
+    width: 100,
+    height: 145,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
   },
 });

@@ -57,6 +57,15 @@ async function readData(): Promise<StorageData> {
     }
     const content = await DATA_FILE.text();
     cachedData = JSON.parse(content) as StorageData;
+    if (!cachedData.bookSettings) {
+      cachedData.bookSettings = {};
+    }
+    if (!cachedData.progress) {
+      cachedData.progress = {};
+    }
+    if (!cachedData.library) {
+      cachedData.library = [];
+    }
     return cachedData;
   } catch (error) {
     console.warn('[StorageService] Error reading data, returning defaults:', error);
@@ -136,7 +145,7 @@ export async function saveProgress(progress: ReadingProgress, immediate: boolean
     saveProgressTimer = setTimeout(() => {
       saveProgressTimer = null;
       writeData(data);
-    }, 2500);
+    }, 400);
   }
 }
 

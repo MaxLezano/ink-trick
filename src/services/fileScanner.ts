@@ -1,7 +1,7 @@
 /**
  * InkTrick - File Scanner Service
  * Escanea directorios utilizando la API orientada a objetos moderna de expo-file-system.
- * Solo soporta archivos PDF.
+ * Soporta archivos PDF, CBR y CBZ.
  */
 import { File, Directory } from 'expo-file-system';
 import { BookFile, SupportedFormat } from '../utils/types';
@@ -40,7 +40,7 @@ function getExtension(fileName: string): string {
 }
 
 /**
- * Verifica si un archivo tiene una extensión soportada (.pdf).
+ * Verifica si un archivo tiene una extensión soportada (.pdf, .cbr, .cbz).
  */
 function isSupportedFile(fileName: string): boolean {
   const ext = getExtension(fileName);
@@ -48,7 +48,7 @@ function isSupportedFile(fileName: string): boolean {
 }
 
 /**
- * Escanea recursivamente un objeto Directory buscando archivos PDF.
+ * Escanea recursivamente un objeto Directory buscando archivos soportados (.pdf, .cbr, .cbz).
  * Utiliza exclusivamente el método list() de la API orientada a objetos moderna de expo-file-system.
  */
 export async function scanDirectory(dir: any): Promise<BookFile[]> {
@@ -61,41 +61,56 @@ export async function scanDirectory(dir: any): Promise<BookFile[]> {
 
     // Listar contenido del directorio (devuelve array de File | Directory)
     const contents = dir.list();
-    const files = contents.filter((item: any) => item instanceof File);
-    const directories = contents.filter((item: any) => item instanceof Directory);
 
-    // Recursión en subdirectorios
+    // Clasificación segura de archivos y subdirectorios
+    const files: any[] = [];
+    const directories: any[] = [];
+
+    for (const item of contents) {
+      if (item instanceof Directory) {
+        directories.push(item);
+      } else if (item) {
+        // Tratar cualquier elemento no-directorio como archivo potencial
+        files.push(item);
+      }
+    }
+
+    // Recursión en subdirectorios aislada por carpeta para no interrumpir el escaneo general
     for (const subDir of directories) {
-      const subBooks = await scanDirectory(subDir);
-      books.push(...subBooks);
+      try {
+        const subBooks = await scanDirectory(subDir);
+        books.push(...subBooks);
+      } catch (subErr) {
+        console.warn(`[FileScanner] Subfolder scan error:`, subDir?.uri, subErr);
+      }
     }
 
     // Buscar imágenes en la misma carpeta que puedan servir de portada
-    const imageExtensions = ['.jpg', '.jpeg', '.png'];
+    const imageExtensions = ['.jpg', '.jpeg', '.png', '.webp'];
     const coverImages = files.filter((f: any) => {
-      const ext = getExtension(f.name);
+      const ext = getExtension(f?.name || '');
       return imageExtensions.includes(ext);
     });
 
-    const findCoverForFile = (pdfName: string) => {
-      const pdfBase = pdfName.replace(/\.[^/.]+$/, '').toLowerCase();
-      // 1. Intentar buscar imagen con el mismo nombre exacto (ej. "Vol 1.jpg" para "Vol 1.pdf")
-      const exactMatch = coverImages.find((img: any) => img.name.replace(/\.[^/.]+$/, '').toLowerCase() === pdfBase);
+    const findCoverForFile = (baseFileName: string) => {
+      const baseName = baseFileName.replace(/\.[^/.]+$/, '').toLowerCase();
+      // 1. Intentar buscar imagen con el mismo nombre exacto (ej. "Vol 1.jpg" para "Vol 1.cbr")
+      const exactMatch = coverImages.find((img: any) => img.name && img.name.replace(/\.[^/.]+$/, '').toLowerCase() === baseName);
       if (exactMatch) return exactMatch.uri;
 
       // 2. Intentar buscar imágenes genéricas de portada en la misma carpeta ("cover.jpg", "folder.png")
       const genericMatch = coverImages.find((img: any) => {
-        const name = img.name.replace(/\.[^/.]+$/, '').toLowerCase();
-        return name === 'cover' || name === 'folder';
+        const name = (img.name || '').replace(/\.[^/.]+$/, '').toLowerCase();
+        return name === 'cover' || name === 'folder' || name === 'portada';
       });
       if (genericMatch) return genericMatch.uri;
 
       return undefined;
     };
 
-    // Procesar archivos PDF
+    // Procesar archivos soportados (.pdf, .cbr, .cbz)
     for (const file of files) {
-      const fileName = file.name;
+      const fileName = file?.name || '';
       if (isSupportedFile(fileName)) {
         const ext = getExtension(fileName) as SupportedFormat;
         const coverUri = findCoverForFile(fileName);
@@ -105,7 +120,7 @@ export async function scanDirectory(dir: any): Promise<BookFile[]> {
           fileName: fileName,
           filePath: file.uri,
           format: ext,
-          fileSize: file.size,
+          fileSize: file.size || 0,
           addedAt: Date.now(),
           isFavorite: false,
           coverUri,

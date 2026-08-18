@@ -4,7 +4,7 @@
 import { SupportedFormat } from './types';
 
 // ─── Extensiones de archivo soportadas ─────────────────────────────────────
-export const SUPPORTED_EXTENSIONS: SupportedFormat[] = ['.pdf'];
+export const SUPPORTED_EXTENSIONS: SupportedFormat[] = ['.pdf', '.cbr', '.cbz'];
 
 // ─── Tema visual fijo (oscuro) ─────────────────────────────────────────────
 export const COLORS = {

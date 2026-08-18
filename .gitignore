@@ -43,3 +43,6 @@ yarn-error.*
 # IDE and Editor configurations
 .vscode/
 .idea/
+template/
+# Local AI runtime state
+.atl/
