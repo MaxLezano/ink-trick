@@ -66,6 +66,17 @@ function mergeScan(existing: BookFile[], scanned: BookFile[]): { merged: BookFil
       coverPage: prev.coverPage,
       pageCount: prev.pageCount,
       order: prev.order,
+      // Metadata read from the file itself replaces the file-name title.
+      ...(prev.infoChecked
+        ? {
+            title: prev.title,
+            author: prev.author,
+            series: prev.series,
+            volume: prev.volume,
+            summary: prev.summary,
+            infoChecked: true,
+          }
+        : {}),
     };
   });
   return { merged, added };
@@ -106,6 +117,7 @@ async function generateMissingCovers(get: () => LibraryStore, set: (partial: Par
       }
     }
     if (pending.length > 0) await StorageService.saveLibrary(get().books);
+    await readMissingInfo(get, set);
   } finally {
     coverJobRunning = false;
   }
@@ -113,6 +125,40 @@ async function generateMissingCovers(get: () => LibraryStore, set: (partial: Par
     coverJobRequested = false;
     generateMissingCovers(get, set);
   }
+}
+
+/** Display title from embedded metadata: "Series Vol. 3: Title", "Title", or null. */
+function titleFromInfo(info: BookCache.BookInfo): string | null {
+  const series = info.series?.trim();
+  const title = info.title?.trim();
+  if (!series) return title || null;
+  const index = info.volume ? ` Vol. ${info.volume}` : info.number ? ` #${info.number}` : '';
+  const base = `${series}${index}`;
+  return title && title.toLowerCase() !== series.toLowerCase() ? `${base}: ${title}` : base;
+}
+
+/** Reads ComicInfo.xml (CBZ) / EPUB metadata once per book, after the covers. */
+async function readMissingInfo(get: () => LibraryStore, set: (partial: Partial<LibraryStore>) => void) {
+  const pending = get().books.filter(b => !b.infoChecked && BookCache.hasEmbeddedInfo(b.format));
+  for (const book of pending) {
+    const info = await BookCache.readBookInfo(book);
+    const title = info ? titleFromInfo(info) : null;
+    const books = get().books.map(b =>
+      b.id === book.id
+        ? {
+            ...b,
+            infoChecked: true,
+            title: title ?? b.title,
+            author: info?.author?.trim() || b.author,
+            series: info?.series?.trim() || b.series,
+            volume: info?.volume ?? info?.number ?? b.volume,
+            summary: info?.summary?.trim() || b.summary,
+          }
+        : b,
+    );
+    set({ books });
+  }
+  if (pending.length > 0) await StorageService.saveLibrary(get().books);
 }
 
 // ─── Store ───────────────────────────────────────────────────────────────────
@@ -453,6 +499,8 @@ export function matchesQuery(book: BookFile, query: string): boolean {
   return (
     book.title.toLowerCase().includes(q) ||
     book.fileName.toLowerCase().includes(q) ||
+    (book.author ?? '').toLowerCase().includes(q) ||
+    (book.series ?? '').toLowerCase().includes(q) ||
     (book.folder ?? '').toLowerCase().includes(q)
   );
 }

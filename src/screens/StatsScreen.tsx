@@ -22,7 +22,7 @@ import { COLORS } from '../utils/constants';
 import { useLibraryStore } from '../store/libraryStore';
 import * as StorageService from '../services/storageService';
 import * as BackupService from '../services/backupService';
-import { formatDuration } from '../utils/format';
+import { formatDuration, formatRelativeDate } from '../utils/format';
 import { BackIcon } from '../components/Icons';
 
 type Props = {
@@ -84,10 +84,12 @@ export default function StatsScreen({ navigation }: Props) {
   const progress = useLibraryStore(s => s.progress);
   const [stats, setStats] = useState<ReadingStats | null>(null);
   const [selectedDay, setSelectedDay] = useState<number | null>(null);
-  const [busy, setBusy] = useState<'export' | 'import' | null>(null);
+  const [busy, setBusy] = useState<'export' | 'import' | 'auto' | null>(null);
+  const [auto, setAuto] = useState<StorageService.AutoBackupConfig | null>(null);
 
   const reload = useCallback(() => {
     StorageService.getStats().then(setStats);
+    StorageService.getAutoBackup().then(setAuto);
   }, []);
   useEffect(reload, [reload]);
 
@@ -153,6 +155,31 @@ export default function StatsScreen({ navigation }: Props) {
       setBusy(null);
     }
   }, [reload]);
+
+  const handleEnableAuto = useCallback(async () => {
+    setBusy('auto');
+    try {
+      const config = await BackupService.enableAutoBackup();
+      if (config) setAuto(config);
+      if (config?.lastError) Alert.alert('No se pudo guardar', config.lastError);
+    } finally {
+      setBusy(null);
+    }
+  }, []);
+
+  const handleDisableAuto = useCallback(() => {
+    Alert.alert('Respaldo automático', '¿Quieres desactivarlo? Los respaldos ya guardados se quedan en la carpeta.', [
+      { text: 'Cancelar', style: 'cancel' },
+      {
+        text: 'Desactivar',
+        style: 'destructive',
+        onPress: async () => {
+          await BackupService.disableAutoBackup();
+          setAuto(null);
+        },
+      },
+    ]);
+  }, []);
 
   const chartWidth = Math.min(width, 900) - 40 - 32;
   const barSlot = chartWidth / CHART_DAYS;
@@ -256,6 +283,35 @@ export default function StatsScreen({ navigation }: Props) {
               </TouchableOpacity>
               <TouchableOpacity style={styles.outlineBtn} onPress={handleImport} disabled={!!busy}>
                 {busy === 'import' ? <ActivityIndicator color={COLORS.accent} /> : <Text style={styles.outlineBtnText}>Importar</Text>}
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Respaldo automático semanal</Text>
+            <Text style={styles.cardText}>
+              Una vez por semana se guarda una copia en la carpeta que elijas (se conservan las 3 más recientes). Si la
+              carpeta se sincroniza con otra tablet, allí puedes importarla.
+            </Text>
+            {auto ? (
+              <Text style={[styles.cardHint, auto.lastError ? { color: COLORS.seal } : null]}>
+                {auto.lastError
+                  ? `Último intento falló: ${auto.lastError}`
+                  : `Activo en "${auto.folderName}"${auto.lastAt ? ` · último ${formatRelativeDate(auto.lastAt)}` : ''}`}
+              </Text>
+            ) : null}
+            <View style={[styles.row, styles.rowEnd]}>
+              {auto ? (
+                <TouchableOpacity style={styles.outlineBtn} onPress={handleDisableAuto} disabled={!!busy}>
+                  <Text style={styles.outlineBtnText}>Desactivar</Text>
+                </TouchableOpacity>
+              ) : null}
+              <TouchableOpacity style={styles.primaryBtn} onPress={handleEnableAuto} disabled={!!busy}>
+                {busy === 'auto' ? (
+                  <ActivityIndicator color="#0A0A0A" />
+                ) : (
+                  <Text style={styles.primaryBtnText}>{auto ? 'Cambiar carpeta' : 'Elegir carpeta'}</Text>
+                )}
               </TouchableOpacity>
             </View>
           </View>

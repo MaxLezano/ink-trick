@@ -162,3 +162,20 @@ export const ArrowIcon: React.FC<IconProps & { direction?: 'left' | 'right' }> =
     </G>
   </Base>
 );
+
+/** Bookmark: a hanging ribbon (filled when the page is marked). */
+export const BookmarkIcon: React.FC<IconProps & { filled?: boolean }> = ({ size = 20, color = '#FFFFFF', filled = false }) => (
+  <Base size={size}>
+    <Path d="M7 4.2c3.3-.4 6.7-.4 10 0v15.6l-5-3.7-5 3.7Z" {...stroke(color, 1.8)} fill={filled ? color : 'none'} />
+  </Base>
+);
+
+/** Table of contents: brush strokes with ink dots, like an index on a scroll. */
+export const IndexIcon: React.FC<IconProps> = ({ size = 20, color = '#FFFFFF' }) => (
+  <Base size={size}>
+    <Path d="M9.5 6.8c3.2-.3 6.4-.2 9.6.1M9.5 12c3.2-.2 6.4-.1 9.6.1M9.5 17.2c2.3-.2 4.5-.1 6.8.1" {...stroke(color, 1.9)} />
+    <Circle cx={5.3} cy={6.8} r={1.3} fill={color} />
+    <Circle cx={5.3} cy={12} r={1.3} fill={color} />
+    <Circle cx={5.3} cy={17.2} r={1.3} fill={color} />
+  </Base>
+);

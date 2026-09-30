@@ -4,12 +4,19 @@
  * All reads share one in-memory object; writes are serialized and atomic.
  */
 import { File, Directory, Paths } from 'expo-file-system';
-import { BookFile, ReadingProgress, BookSettings, ReadingStats } from '../utils/types';
+import { BookFile, Bookmark, ReadingProgress, BookSettings, ReadingStats } from '../utils/types';
 
 export interface ScannedFolder {
   uri: string;
   name: string;
   enabled: boolean;
+}
+
+export interface AutoBackupConfig {
+  folderUri: string;
+  folderName: string;
+  lastAt?: number;
+  lastError?: string;
 }
 
 interface StorageData {
@@ -22,6 +29,8 @@ interface StorageData {
   seriesSettings?: Record<string, BookSettings>; // Last settings used per collection / folder
   excludedPaths?: string[]; // Files the user removed from the library (skipped on rescans)
   stats?: ReadingStats;
+  bookmarks?: Record<string, Bookmark[]>;
+  autoBackup?: AutoBackupConfig;
 }
 
 export type StorageSnapshot = StorageData;
@@ -211,6 +220,7 @@ export async function forgetBooks(bookIds: string[]): Promise<void> {
   for (const id of bookIds) {
     delete data.progress[id];
     if (data.bookSettings) delete data.bookSettings[id];
+    if (data.bookmarks) delete data.bookmarks[id];
   }
   await writeData(data);
 }
@@ -273,6 +283,12 @@ export const DEFAULT_BOOK_SETTINGS: BookSettings = {
   doublePage: 'auto',
   autoCrop: false,
   fullscreen: true,
+  volumeKeys: true,
+  invertColors: false,
+  textSize: 100,
+  textTheme: 'dark',
+  textFont: 'book',
+  lineHeight: 1.6,
 };
 
 /**
@@ -350,7 +366,34 @@ export async function markFinished(bookId: string): Promise<void> {
   await writeData(data);
 }
 
+// ─── Bookmarks ─────────────────────────────────────────────────────────────
+
+export async function getBookmarks(bookId: string): Promise<Bookmark[]> {
+  const data = await readData();
+  return data.bookmarks?.[bookId] ?? [];
+}
+
+export async function saveBookmarks(bookId: string, bookmarks: Bookmark[]): Promise<void> {
+  const data = await readData();
+  const all = (data.bookmarks ??= {});
+  if (bookmarks.length > 0) all[bookId] = bookmarks;
+  else delete all[bookId];
+  await writeData(data);
+}
+
 // ─── Backup ────────────────────────────────────────────────────────────────
+
+export async function getAutoBackup(): Promise<AutoBackupConfig | null> {
+  const data = await readData();
+  return data.autoBackup ?? null;
+}
+
+export async function saveAutoBackup(config: AutoBackupConfig | null): Promise<void> {
+  const data = await readData();
+  if (config) data.autoBackup = config;
+  else delete data.autoBackup;
+  await writeData(data);
+}
 
 /** Full copy of the persisted data (used for backups). */
 export async function getSnapshot(): Promise<StorageSnapshot> {

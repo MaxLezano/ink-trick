@@ -4,7 +4,7 @@
  */
 
 // ─── Formato soportado ─────────────────────────────────────────────────────
-export type SupportedFormat = '.pdf' | '.cbr' | '.cbz';
+export type SupportedFormat = '.pdf' | '.cbr' | '.cbz' | '.epub';
 
 // ─── Archivo de libro ──────────────────────────────────────────────────────
 export interface BookFile {
@@ -17,6 +17,10 @@ export interface BookFile {
   coverUri?: string;
   coverPage?: number;     // Página seleccionada como portada (1-indexed)
   author?: string;
+  series?: string;        // From ComicInfo.xml / EPUB metadata
+  volume?: string;
+  summary?: string;
+  infoChecked?: boolean;  // Embedded metadata already read (CBZ / EPUB)
   addedAt: number;        // timestamp
   lastOpenedAt?: number;  // timestamp
   isFavorite: boolean;
@@ -30,7 +34,25 @@ export interface PageInfo {
   uri: string;
   width: number;
   height: number;
+  chapter?: string;       // Folder of the page inside the archive (chapter packs)
 }
+
+// ─── Table of contents / bookmarks ─────────────────────────────────────────
+export interface TocItem {
+  title: string;
+  depth: number;
+  page: number;           // Logical page (EPUB: position, see EPUB_POSITIONS)
+  spine?: number;         // EPUB: chapter file index
+  anchor?: string;        // EPUB: element id inside the chapter
+}
+
+export interface Bookmark {
+  page: number;           // Logical page (EPUB: position)
+  createdAt: number;
+}
+
+export type TextTheme = 'dark' | 'sepia' | 'light';
+export type TextFont = 'book' | 'serif' | 'sans';
 
 // ─── Progreso de lectura ───────────────────────────────────────────────────
 export interface ReadingProgress {
@@ -54,6 +76,12 @@ export interface BookSettings {
   doublePage?: DoublePageMode; // Two pages side by side (horizontal paged comics)
   autoCrop?: boolean;       // Trim uniform white/black margins (comics)
   fullscreen?: boolean;     // Hide the Android status and navigation bars
+  volumeKeys?: boolean;     // Volume down / up turn pages
+  invertColors?: boolean;   // Night mode: black paper, white lines (comics / PDF)
+  textSize?: number;        // EPUB: font size in %
+  textTheme?: TextTheme;    // EPUB: page colors
+  textFont?: TextFont;      // EPUB: typeface
+  lineHeight?: number;      // EPUB: line spacing
 }
 
 export type DoublePageMode = 'off' | 'on' | 'auto'; // auto = only in landscape

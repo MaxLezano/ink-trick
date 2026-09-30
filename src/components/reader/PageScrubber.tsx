@@ -1,21 +1,26 @@
 /**
  * InkTrick - Page scrubber
  * Draggable progress track to jump quickly through a book. Shows a live page preview label while
- * dragging and only commits the page when the finger is released.
+ * dragging and only commits the page when the finger is released. Bookmarked pages show as ticks.
  */
 import React, { useCallback, useState } from 'react';
 import { LayoutChangeEvent, StyleSheet, Text, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { runOnJS } from 'react-native-reanimated';
+import { COLORS } from '../../utils/constants';
 
 interface Props {
   current: number; // 0-based
   total: number;
   reversed?: boolean; // RTL: first page on the right
   onCommit: (index: number) => void;
+  marks?: number[]; // Bookmarked pages
+  labelFor?: (index: number) => string; // Label of a page (EPUB shows a percentage)
 }
 
-export default function PageScrubber({ current, total, reversed = false, onCommit }: Props) {
+const pageLabel = (index: number) => `${index + 1}`;
+
+export default function PageScrubber({ current, total, reversed = false, onCommit, marks, labelFor = pageLabel }: Props) {
   const [trackWidth, setTrackWidth] = useState(1);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
 
@@ -53,7 +58,7 @@ export default function PageScrubber({ current, total, reversed = false, onCommi
 
   return (
     <View style={styles.container}>
-      <Text style={styles.label}>{reversed ? total : 1}</Text>
+      <Text style={styles.label}>{labelFor(reversed ? total - 1 : 0)}</Text>
       <GestureDetector gesture={gesture}>
         <View
           style={styles.hitArea}
@@ -69,15 +74,19 @@ export default function PageScrubber({ current, total, reversed = false, onCommi
               ]}
             />
           </View>
+          {marks?.map(page => {
+            const f = total > 1 ? page / (total - 1) : 0;
+            return <View key={page} style={[styles.mark, { left: (reversed ? 1 - f : f) * trackWidth - 1.5 }]} />;
+          })}
           <View style={[styles.thumb, { left: fillFraction * trackWidth - 9 }]} />
           {dragIndex !== null && (
             <View style={[styles.bubble, { left: Math.min(trackWidth - 70, Math.max(0, fillFraction * trackWidth - 35)) }]}>
-              <Text style={styles.bubbleText}>{dragIndex + 1}</Text>
+              <Text style={styles.bubbleText}>{labelFor(dragIndex)}</Text>
             </View>
           )}
         </View>
       </GestureDetector>
-      <Text style={styles.label}>{reversed ? 1 : total}</Text>
+      <Text style={styles.label}>{labelFor(reversed ? 0 : total - 1)}</Text>
     </View>
   );
 }
@@ -111,6 +120,14 @@ const styles = StyleSheet.create({
     top: 0,
     bottom: 0,
     backgroundColor: '#FFFFFF',
+  },
+  mark: {
+    position: 'absolute',
+    width: 3,
+    height: 12,
+    borderRadius: 1.5,
+    top: 12,
+    backgroundColor: COLORS.seal,
   },
   thumb: {
     position: 'absolute',

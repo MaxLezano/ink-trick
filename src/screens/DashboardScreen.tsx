@@ -367,7 +367,15 @@ export default function DashboardScreen({ navigation }: Props) {
     const pct = Math.round(p?.percentage ?? 0);
     const pages = p?.totalPages || book.pageCount;
     const status =
-      pct >= 100 ? 'Lectura finalizada' : p && pages ? `Página ${p.currentPage + 1} de ${pages}` : 'Sin comenzar';
+      pct >= 100
+        ? 'Lectura finalizada'
+        : !p
+          ? 'Sin comenzar'
+          : book.format === '.epub' // EPUB progress is a text position, not a page
+            ? 'En curso'
+            : pages
+              ? `Página ${p.currentPage + 1} de ${pages}`
+              : 'Sin comenzar';
     const coverWidth = isTablet ? 190 : 118;
     return (
       <View>
@@ -724,7 +732,7 @@ export default function DashboardScreen({ navigation }: Props) {
         <Pressable style={styles.modalOverlay} onPress={() => setFoldersModalVisible(false)}>
           <Pressable style={[styles.modalCard, { maxHeight: '85%' }]}>
             <ModalHeader title="Carpetas" onClose={() => setFoldersModalVisible(false)} />
-            <Text style={styles.modalText}>InkTrick busca CBR, CBZ y PDF en estas carpetas y sus subcarpetas.</Text>
+            <Text style={styles.modalText}>InkTrick busca CBR, CBZ, PDF y EPUB en estas carpetas y sus subcarpetas.</Text>
 
             {scannedFolders.length === 0 ? (
               <View style={styles.foldersEmpty}>

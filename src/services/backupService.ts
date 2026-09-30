@@ -3,9 +3,10 @@
  * Exports progress, favorites, collections, settings and statistics to a JSON file chosen by the
  * user, and restores them. Books are matched by path, falling back to file name + size so a backup
  * also works after moving the files or on another device.
+ * The optional weekly automatic backup writes into a folder picked once (keeps the last few).
  */
 import { Directory, File } from 'expo-file-system';
-import { BookFile, ReadingStats } from '../utils/types';
+import { Bookmark, BookFile, ReadingStats } from '../utils/types';
 import * as StorageService from './storageService';
 
 const BACKUP_KIND = 'inktrick-backup';
@@ -28,26 +29,90 @@ function stamp(date = new Date()): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}`;
 }
 
-/** Asks for a folder and writes the backup there. Returns the file name, or null if cancelled. */
-export async function exportBackup(): Promise<string | null> {
-  let dir: Directory;
+async function pickFolder(): Promise<Directory | null> {
   try {
-    dir = (await Directory.pickDirectoryAsync()) as unknown as Directory;
+    return ((await Directory.pickDirectoryAsync()) as unknown as Directory) ?? null;
   } catch {
     return null;
   }
-  if (!dir) return null;
+}
 
+async function writeBackup(dir: Directory, name: string): Promise<void> {
   const backup: BackupFile = {
     kind: BACKUP_KIND,
     version: BACKUP_VERSION,
     exportedAt: Date.now(),
     data: await StorageService.getSnapshot(),
   };
-  const name = `inktrick-respaldo-${stamp()}.json`;
   const file = dir.createFile(name, 'application/json');
   file.write(JSON.stringify(backup));
+}
+
+/** Asks for a folder and writes the backup there. Returns the file name, or null if cancelled. */
+export async function exportBackup(): Promise<string | null> {
+  const dir = await pickFolder();
+  if (!dir) return null;
+  const name = `inktrick-respaldo-${stamp()}.json`;
+  await writeBackup(dir, name);
   return name;
+}
+
+// ─── Automatic weekly backup ─────────────────────────────────────────────────
+
+const AUTO_PREFIX = 'inktrick-auto-';
+const AUTO_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+const AUTO_KEEP = 3;
+
+function folderLabel(uri: string): string {
+  try {
+    const last = decodeURIComponent(uri).split('/').filter(Boolean).pop() ?? '';
+    return last.split(':').pop() || 'Carpeta';
+  } catch {
+    return 'Carpeta';
+  }
+}
+
+/** Writes an automatic backup now and keeps only the newest few (only files this feature made). */
+async function writeAutoBackup(config: StorageService.AutoBackupConfig): Promise<StorageService.AutoBackupConfig> {
+  try {
+    const dir = new Directory(config.folderUri);
+    if (!dir.exists) throw new Error('La carpeta ya no existe o no hay permiso.');
+    await writeBackup(dir, `${AUTO_PREFIX}${stamp()}.json`);
+    const old = dir
+      .list()
+      .filter((item): item is File => item instanceof File && item.name.startsWith(AUTO_PREFIX) && item.name.endsWith('.json'))
+      .sort((a, b) => b.name.localeCompare(a.name))
+      .slice(AUTO_KEEP);
+    old.forEach(f => {
+      try { f.delete(); } catch {}
+    });
+    const next = { ...config, lastAt: Date.now(), lastError: undefined };
+    await StorageService.saveAutoBackup(next);
+    return next;
+  } catch (error: any) {
+    const next = { ...config, lastError: error?.message ?? 'No se pudo escribir el respaldo.' };
+    await StorageService.saveAutoBackup(next);
+    return next;
+  }
+}
+
+/** Picks the folder for automatic backups and writes the first one. Null if cancelled. */
+export async function enableAutoBackup(): Promise<StorageService.AutoBackupConfig | null> {
+  const dir = await pickFolder();
+  if (!dir) return null;
+  return writeAutoBackup({ folderUri: dir.uri, folderName: folderLabel(dir.uri) });
+}
+
+export async function disableAutoBackup(): Promise<void> {
+  await StorageService.saveAutoBackup(null);
+}
+
+/** Runs the weekly backup when it is due (on launch and when the app goes to background). */
+export async function runAutoBackupIfDue(): Promise<void> {
+  const config = await StorageService.getAutoBackup();
+  if (!config) return;
+  if (config.lastAt && Date.now() - config.lastAt < AUTO_INTERVAL_MS) return;
+  await writeAutoBackup(config);
 }
 
 /** Asks for a backup file and merges it into the current library. Null if cancelled. */
@@ -111,6 +176,14 @@ export async function importBackup(currentBooks: BookFile[]): Promise<ImportResu
     if (id && !bookSettings[id]) bookSettings[id] = settings;
   }
 
+  const bookmarks: Record<string, Bookmark[]> = { ...(current.bookmarks ?? {}) };
+  for (const [oldId, marks] of Object.entries(source.bookmarks ?? {})) {
+    const id = idMap.get(oldId);
+    if (!id) continue;
+    const pages = new Set((bookmarks[id] ?? []).map(b => b.page));
+    bookmarks[id] = [...(bookmarks[id] ?? []), ...marks.filter(m => !pages.has(m.page))].sort((a, b) => a.page - b.page);
+  }
+
   const stats: ReadingStats = current.stats ?? { days: {}, books: {}, finished: {} };
   const srcStats = source.stats;
   if (srcStats) {
@@ -140,6 +213,7 @@ export async function importBackup(currentBooks: BookFile[]): Promise<ImportResu
     library,
     progress,
     bookSettings,
+    bookmarks,
     seriesSettings: { ...(source.seriesSettings ?? {}), ...(current.seriesSettings ?? {}) },
     stats,
   });

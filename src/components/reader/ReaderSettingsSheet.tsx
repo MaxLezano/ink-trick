@@ -3,8 +3,8 @@
  * Centered dialog with every per-book reading option. Changes apply instantly.
  */
 import React from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { BookSettings, DoublePageMode } from '../../utils/types';
+import { Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { BookSettings, DoublePageMode, TextFont, TextTheme } from '../../utils/types';
 import { COLORS } from '../../utils/constants';
 import { RefreshIcon } from '../Icons';
 
@@ -12,6 +12,7 @@ interface Props {
   visible: boolean;
   settings: BookSettings;
   isComic: boolean;
+  isEpub: boolean;
   onChange: (settings: BookSettings) => void;
   onResetProgress: () => void;
   onClose: () => void;
@@ -55,6 +56,11 @@ function Segmented<T>({ label, hint, choices, value, onSelect }: {
   );
 }
 
+// Color filters (invert) need Android 12+ (RenderEffect).
+const CAN_INVERT = Platform.OS === 'android' && Number(Platform.Version) >= 31;
+
+const TEXT_SIZES = [85, 100, 115, 130, 150, 175];
+
 const onOff: Choice<boolean>[] = [
   { label: 'No', value: false },
   { label: 'Sí', value: true },
@@ -84,7 +90,7 @@ function matchesPreset(settings: BookSettings, values: PresetValues): boolean {
   );
 }
 
-export default function ReaderSettingsSheet({ visible, settings, isComic, onChange, onResetProgress, onClose }: Props) {
+export default function ReaderSettingsSheet({ visible, settings, isComic, isEpub, onChange, onResetProgress, onClose }: Props) {
   const set = <K extends keyof BookSettings>(key: K, value: BookSettings[K]) => onChange({ ...settings, [key]: value });
 
   const activePreset = PRESETS.find(p => matchesPreset(settings, p.values))?.id;
@@ -96,6 +102,48 @@ export default function ReaderSettingsSheet({ visible, settings, isComic, onChan
       <View style={styles.sheet}>
         <Text style={styles.title}>Ajustes de lectura</Text>
         <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+          {isEpub ? (
+            <>
+              <Text style={styles.section}>Texto</Text>
+              <Segmented
+                label="Tamaño de letra"
+                choices={TEXT_SIZES.map(v => ({ label: `${v}%`, value: v }))}
+                value={settings.textSize ?? 100}
+                onSelect={v => set('textSize', v)}
+              />
+              <Segmented
+                label="Colores"
+                choices={[
+                  { label: 'Oscuro', value: 'dark' as TextTheme },
+                  { label: 'Sepia', value: 'sepia' as TextTheme },
+                  { label: 'Claro', value: 'light' as TextTheme },
+                ]}
+                value={settings.textTheme ?? 'dark'}
+                onSelect={v => set('textTheme', v)}
+              />
+              <Segmented
+                label="Tipo de letra"
+                choices={[
+                  { label: 'Del libro', value: 'book' as TextFont },
+                  { label: 'Serif', value: 'serif' as TextFont },
+                  { label: 'Sans', value: 'sans' as TextFont },
+                ]}
+                value={settings.textFont ?? 'book'}
+                onSelect={v => set('textFont', v)}
+              />
+              <Segmented
+                label="Interlineado"
+                choices={[
+                  { label: 'Compacto', value: 1.35 },
+                  { label: 'Normal', value: 1.6 },
+                  { label: 'Amplio', value: 1.9 },
+                ]}
+                value={settings.lineHeight ?? 1.6}
+                onSelect={v => set('lineHeight', v)}
+              />
+            </>
+          ) : (
+          <>
           <Text style={styles.section}>Modo rápido</Text>
           <View style={styles.presets}>
             {PRESETS.map(preset => {
@@ -168,10 +216,12 @@ export default function ReaderSettingsSheet({ visible, settings, isComic, onChan
               onSelect={v => set('autoCrop', v)}
             />
           )}
+          </>
+          )}
 
           <Text style={styles.section}>Gestos</Text>
           <Segmented label="Zoom con doble toque" choices={onOff} value={settings.enableDoubleTapZoom} onSelect={v => set('enableDoubleTapZoom', v)} />
-          {(isComic || settings.usePaging) && (
+          {(isComic || isEpub || settings.usePaging) && (
             <Segmented
               label="Tocar bordes para pasar página"
               hint="El menú se abre tocando arriba"
@@ -180,8 +230,24 @@ export default function ReaderSettingsSheet({ visible, settings, isComic, onChan
               onSelect={v => set('tapToTurn', v)}
             />
           )}
+          <Segmented
+            label="Teclas de volumen"
+            hint="Bajar volumen avanza, subir retrocede"
+            choices={onOff}
+            value={settings.volumeKeys ?? true}
+            onSelect={v => set('volumeKeys', v)}
+          />
 
           <Text style={styles.section}>Pantalla</Text>
+          {!isEpub && CAN_INVERT && (
+            <Segmented
+              label="Modo noche"
+              hint="Invierte los colores: fondo negro y líneas blancas"
+              choices={onOff}
+              value={settings.invertColors ?? false}
+              onSelect={v => set('invertColors', v)}
+            />
+          )}
           <Segmented
             label="Atenuar brillo"
             choices={[0, 0.2, 0.4, 0.6].map(v => ({ label: `${v * 100}%`, value: v }))}

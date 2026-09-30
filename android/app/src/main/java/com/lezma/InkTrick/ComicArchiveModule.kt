@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.ParcelFileDescriptor
+import android.util.Xml
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
@@ -19,6 +20,8 @@ import me.zhanghai.android.libarchive.ArchiveEntry
 import me.zhanghai.android.libarchive.ArchiveException
 import org.json.JSONArray
 import org.json.JSONObject
+import org.xmlpull.v1.XmlPullParser
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -30,7 +33,7 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 
 /**
- * Native helpers for comic archives (CBR/CBZ) and PDF metadata.
+ * Native helpers for comic archives (CBR/CBZ), EPUB books and PDF metadata.
  *
  * Page extraction writes a `manifest.json` into the destination folder once every page has been
  * extracted. The manifest is the completion marker: a folder without it is treated as a partial
@@ -155,6 +158,8 @@ class ComicArchiveModule(reactContext: ReactApplicationContext) : ReactContextBa
             map.putString("uri", "file://" + File(dir, p.getString("name")).absolutePath)
             map.putInt("width", p.optInt("w", 0))
             map.putInt("height", p.optInt("h", 0))
+            // Folder of the page inside the archive: chapters of CBZ files packed one per folder.
+            map.putString("chapter", p.optString("dir", ""))
             result.pushMap(map)
         }
         return result
@@ -180,7 +185,7 @@ class ComicArchiveModule(reactContext: ReactApplicationContext) : ReactContextBa
     private fun finalizeExtraction(dir: File, raw: List<Pair<String, File>>): JSONArray {
         val sorted = raw.sortedWith { a, b -> naturalCompare(a.first, b.first) }
         val pages = JSONArray()
-        sorted.forEachIndexed { index, (_, file) ->
+        sorted.forEachIndexed { index, (path, file) ->
             val ext = file.name.substringAfterLast('.', "jpg")
             val finalFile = File(dir, String.format(Locale.US, "page_%04d.%s", index + 1, ext))
             if (!file.renameTo(finalFile)) {
@@ -188,7 +193,8 @@ class ComicArchiveModule(reactContext: ReactApplicationContext) : ReactContextBa
                 file.delete()
             }
             val (w, h) = imageSize(finalFile)
-            pages.put(JSONObject().put("name", finalFile.name).put("w", w).put("h", h))
+            val folder = path.replace('\\', '/').substringBeforeLast('/', "")
+            pages.put(JSONObject().put("name", finalFile.name).put("w", w).put("h", h).put("dir", folder))
         }
         val tmp = File(dir, "$MANIFEST.tmp")
         tmp.writeText(JSONObject().put("version", MANIFEST_VERSION).put("pages", pages).toString())
@@ -640,6 +646,446 @@ class ComicArchiveModule(reactContext: ReactApplicationContext) : ReactContextBa
         }
     }
 
+    // ─── Metadata (ComicInfo.xml / EPUB OPF) ────────────────────────────────
+
+    private fun newParser(bytes: ByteArray): XmlPullParser = Xml.newPullParser().apply {
+        setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, false)
+        // Relaxed mode tolerates HTML entities (&nbsp;) and sloppy markup found in real books.
+        try { setFeature("http://xmlpull.org/v1/doc/features.html#relaxed", true) } catch (_: Exception) {}
+        setInput(ByteArrayInputStream(bytes), null)
+    }
+
+    private fun localName(name: String?): String = (name ?: "").substringAfter(':').lowercase(Locale.ROOT)
+
+    private fun textOf(parser: XmlPullParser): String? = try {
+        parser.nextText()?.trim()?.takeIf { it.isNotEmpty() }
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun attr(parser: XmlPullParser, name: String): String? {
+        for (i in 0 until parser.attributeCount) {
+            if (localName(parser.getAttributeName(i)) == name) return parser.getAttributeValue(i)
+        }
+        return null
+    }
+
+    /** Reads the entries whose archive path matches [wanted] in a single pass (path -> bytes). */
+    private fun readEntries(uriString: String, wanted: (String) -> Boolean, limit: Int = 1): Map<String, ByteArray> {
+        val found = mutableMapOf<String, ByteArray>()
+        try {
+            withArchive(uriString) { archive ->
+                forEachEntry(archive) { entry, path ->
+                    if (wanted(path)) found[path] = readEntryBytes(archive, entry)
+                    if (found.size >= limit) true else null
+                }
+            }
+        } catch (_: Exception) {}
+        if (found.isEmpty()) {
+            // Zip fallback for archives libarchive cannot read.
+            try {
+                openInputStream(uriString)?.let { s ->
+                    ZipInputStream(s).use { zis ->
+                        var e = zis.nextEntry
+                        while (e != null && found.size < limit) {
+                            if (!e.isDirectory && wanted(e.name)) found[e.name] = zis.readBytes()
+                            e = zis.nextEntry
+                        }
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+        return found
+    }
+
+    private fun parseComicInfo(bytes: ByteArray): WritableMap {
+        val fields = mutableMapOf<String, String>()
+        val parser = newParser(bytes)
+        while (parser.next() != XmlPullParser.END_DOCUMENT) {
+            if (parser.eventType != XmlPullParser.START_TAG) continue
+            val tag = localName(parser.name)
+            if (tag in setOf("title", "series", "number", "volume", "writer", "summary") && tag !in fields) {
+                textOf(parser)?.let { fields[tag] = it }
+            }
+        }
+        return Arguments.createMap().apply {
+            fields["title"]?.let { putString("title", it) }
+            fields["series"]?.let { putString("series", it) }
+            fields["volume"]?.let { putString("volume", it) }
+            fields["number"]?.let { putString("number", it) }
+            fields["writer"]?.let { putString("author", it) }
+            fields["summary"]?.let { putString("summary", it.take(2000)) }
+        }
+    }
+
+    /**
+     * Book metadata without extracting it: ComicInfo.xml for CBZ, the OPF package for EPUB.
+     * Resolves {title?, series?, volume?, number?, author?, summary?} or null when there is none.
+     */
+    @ReactMethod
+    fun readBookInfo(uriString: String, format: String, promise: Promise) {
+        executor.execute {
+            try {
+                if (format == ".epub") {
+                    val opf = readOpf(uriString)
+                    if (opf == null) {
+                        promise.resolve(null)
+                        return@execute
+                    }
+                    promise.resolve(Arguments.createMap().apply {
+                        opf.title?.let { putString("title", it) }
+                        opf.author?.let { putString("author", it) }
+                        opf.series?.let { putString("series", it) }
+                        opf.seriesIndex?.let { putString("volume", it) }
+                        opf.summary?.let { putString("summary", it.take(2000)) }
+                    })
+                    return@execute
+                }
+                val info = readEntries(uriString, { it.substringAfterLast('/').equals("comicinfo.xml", ignoreCase = true) })
+                    .values.firstOrNull()
+                promise.resolve(info?.let { parseComicInfo(it) })
+            } catch (e: Exception) {
+                promise.resolve(null)
+            }
+        }
+    }
+
+    // ─── EPUB ───────────────────────────────────────────────────────────────
+
+    private data class OpfItem(val id: String, val href: String, val mediaType: String, val properties: String)
+
+    private class Opf(val path: String) {
+        var title: String? = null
+        var author: String? = null
+        var series: String? = null
+        var seriesIndex: String? = null
+        var summary: String? = null
+        var rtl = false
+        var coverId: String? = null
+        var tocId: String? = null
+        val items = LinkedHashMap<String, OpfItem>()
+        val spine = mutableListOf<String>()
+
+        /** Archive path of a manifest item (hrefs are relative to the OPF). */
+        fun pathOf(item: OpfItem) = resolvePath(path.substringBeforeLast('/', ""), item.href)
+    }
+
+    private fun parseOpf(path: String, bytes: ByteArray): Opf {
+        val opf = Opf(path)
+        val parser = newParser(bytes)
+        var inMetadata = false
+        while (parser.next() != XmlPullParser.END_DOCUMENT) {
+            val tag = localName(parser.name)
+            if (parser.eventType == XmlPullParser.END_TAG) {
+                if (tag == "metadata") inMetadata = false
+                continue
+            }
+            if (parser.eventType != XmlPullParser.START_TAG) continue
+            when (tag) {
+                "metadata" -> inMetadata = true
+                "title" -> if (inMetadata && opf.title == null) opf.title = textOf(parser)
+                "creator" -> if (inMetadata && opf.author == null) opf.author = textOf(parser)
+                "description" -> if (inMetadata && opf.summary == null) opf.summary = textOf(parser)?.replace(Regex("<[^>]+>"), "")
+                "meta" -> {
+                    val name = attr(parser, "name")
+                    val content = attr(parser, "content")
+                    when {
+                        name == "cover" -> opf.coverId = content
+                        name == "calibre:series" -> opf.series = content
+                        name == "calibre:series_index" -> opf.seriesIndex = content?.removeSuffix(".0")
+                        attr(parser, "property") == "belongs-to-collection" -> opf.series = opf.series ?: textOf(parser)
+                        attr(parser, "property") == "group-position" -> opf.seriesIndex = opf.seriesIndex ?: textOf(parser)
+                    }
+                }
+                "item" -> {
+                    val id = attr(parser, "id") ?: continue
+                    val href = attr(parser, "href") ?: continue
+                    opf.items[id] = OpfItem(id, href, attr(parser, "media-type") ?: "", attr(parser, "properties") ?: "")
+                }
+                "spine" -> {
+                    opf.tocId = attr(parser, "toc")
+                    opf.rtl = attr(parser, "page-progression-direction") == "rtl"
+                }
+                "itemref" -> attr(parser, "idref")?.let { opf.spine.add(it) }
+            }
+        }
+        return opf
+    }
+
+    private fun opfPathFromContainer(bytes: ByteArray): String? {
+        val parser = newParser(bytes)
+        while (parser.next() != XmlPullParser.END_DOCUMENT) {
+            if (parser.eventType == XmlPullParser.START_TAG && localName(parser.name) == "rootfile") {
+                return attr(parser, "full-path")
+            }
+        }
+        return null
+    }
+
+    /** Reads only the package document of an EPUB (two short passes over the archive headers). */
+    private fun readOpf(uriString: String): Opf? {
+        val container = readEntries(uriString, { it.equals("META-INF/container.xml", ignoreCase = true) }).values.firstOrNull()
+            ?: return null
+        val opfPath = opfPathFromContainer(container) ?: return null
+        val bytes = readEntries(uriString, { it == opfPath }).values.firstOrNull() ?: return null
+        return parseOpf(opfPath, bytes)
+    }
+
+    private fun isImageMedia(item: OpfItem) = item.mediaType.startsWith("image/")
+
+    /** Cover image item: EPUB 3 `cover-image`, EPUB 2 `<meta name="cover">`, else an image named cover. */
+    private fun coverItemOf(opf: Opf): OpfItem? =
+        opf.items.values.firstOrNull { it.properties.split(' ').contains("cover-image") }
+            ?: opf.coverId?.let { opf.items[it] }?.takeIf { isImageMedia(it) }
+            ?: opf.items.values.firstOrNull { isImageMedia(it) && (it.id + it.href).contains("cover", ignoreCase = true) }
+            ?: opf.items.values.firstOrNull { isImageMedia(it) }
+
+    /** Writes a cover thumbnail of an EPUB (its declared cover image). */
+    @ReactMethod
+    fun extractEpubCover(uriString: String, destPath: String, maxWidth: Int, promise: Promise) {
+        executor.execute {
+            try {
+                val opf = readOpf(uriString) ?: throw IllegalStateException("Not an EPUB")
+                val cover = coverItemOf(opf) ?: throw IllegalStateException("EPUB without images")
+                val target = opf.pathOf(cover)
+                val bytes = readEntries(uriString, { it == target }).values.firstOrNull()
+                    ?: throw IllegalStateException("Cover image not found")
+                val bitmap = decodeSampled(bytes, maxWidth) ?: throw IllegalStateException("Cannot decode cover")
+                val dest = File(cleanUri(destPath))
+                saveThumbnail(bitmap, dest, maxWidth)
+                promise.resolve("file://${dest.absolutePath}")
+            } catch (e: Exception) {
+                promise.reject("EPUB_ERROR", e.message, e)
+            }
+        }
+    }
+
+    /** Extracts every entry keeping its path; entries escaping [dir] (zip slip) are skipped. */
+    private fun extractAllEntries(uriString: String, dir: File) {
+        val root = dir.canonicalPath + File.separator
+        fun target(path: String): File? {
+            val file = File(dir, path)
+            return if (file.canonicalPath.startsWith(root)) file else null
+        }
+        var count = 0
+        try {
+            withArchive(uriString) { archive ->
+                forEachEntry<Unit>(archive) { entry, path ->
+                    if (ArchiveEntry.filetype(entry) != ArchiveEntry.AE_IFDIR && !path.endsWith("/")) {
+                        target(path)?.let { out ->
+                            out.parentFile?.mkdirs()
+                            writeEntryToFile(archive, out)
+                            count++
+                        }
+                    }
+                    null
+                }
+            }
+        } catch (_: Exception) {
+            count = 0
+        }
+        if (count > 0) return
+        resetDir(dir)
+        val stream = openInputStream(uriString) ?: throw IllegalStateException("Cannot open $uriString")
+        ZipInputStream(stream).use { zis ->
+            var e = zis.nextEntry
+            while (e != null) {
+                if (!e.isDirectory) {
+                    target(e.name)?.let { out ->
+                        out.parentFile?.mkdirs()
+                        FileOutputStream(out).use { zis.copyTo(it) }
+                    }
+                }
+                e = zis.nextEntry
+            }
+        }
+    }
+
+    private class TocEntry(val title: String, val path: String, val anchor: String?, val depth: Int)
+
+    /** EPUB 3 navigation document: the links of `<nav epub:type="toc">` (or the first nav). */
+    private fun parseNav(navPath: String, bytes: ByteArray): List<TocEntry> {
+        val base = navPath.substringBeforeLast('/', "")
+        val out = mutableListOf<TocEntry>()
+        val parser = newParser(bytes)
+        var inToc = false
+        var tocDone = false
+        var olDepth = 0
+        var href: String? = null
+        val text = StringBuilder()
+        while (parser.next() != XmlPullParser.END_DOCUMENT) {
+            val tag = localName(parser.name)
+            when (parser.eventType) {
+                XmlPullParser.START_TAG -> when (tag) {
+                    "nav" -> {
+                        val type = attr(parser, "type") ?: ""
+                        if (!tocDone && (type.contains("toc") || type.isEmpty())) inToc = true
+                    }
+                    "ol" -> if (inToc) olDepth++
+                    "a" -> if (inToc) {
+                        href = attr(parser, "href")
+                        text.setLength(0)
+                    }
+                }
+                XmlPullParser.TEXT -> if (href != null) text.append(parser.text)
+                XmlPullParser.END_TAG -> when (tag) {
+                    "a" -> {
+                        val h = href
+                        if (h != null && inToc) {
+                            val title = text.toString().replace(Regex("\\s+"), " ").trim()
+                            if (title.isNotEmpty()) {
+                                out.add(TocEntry(title, resolvePath(base, h.substringBefore('#')), h.substringAfter('#', "").ifEmpty { null }, (olDepth - 1).coerceAtLeast(0)))
+                            }
+                        }
+                        href = null
+                    }
+                    "ol" -> if (inToc) olDepth--
+                    "nav" -> {
+                        if (inToc) {
+                            inToc = false
+                            tocDone = true
+                        }
+                    }
+                }
+            }
+        }
+        return out
+    }
+
+    /** EPUB 2 NCX: navPoint labels and targets, with their nesting depth. */
+    private fun parseNcx(ncxPath: String, bytes: ByteArray): List<TocEntry> {
+        val base = ncxPath.substringBeforeLast('/', "")
+        val out = mutableListOf<TocEntry>()
+        val parser = newParser(bytes)
+        var depth = 0
+        var label: String? = null
+        var inLabel = false
+        while (parser.next() != XmlPullParser.END_DOCUMENT) {
+            val tag = localName(parser.name)
+            when (parser.eventType) {
+                XmlPullParser.START_TAG -> when (tag) {
+                    "navpoint" -> {
+                        depth++
+                        label = null
+                    }
+                    "navlabel" -> inLabel = true
+                    "text" -> if (inLabel && label == null) label = textOf(parser)
+                    "content" -> {
+                        val src = attr(parser, "src")
+                        if (src != null && label != null) {
+                            out.add(TocEntry(label!!, resolvePath(base, src.substringBefore('#')), src.substringAfter('#', "").ifEmpty { null }, depth - 1))
+                        }
+                    }
+                }
+                XmlPullParser.END_TAG -> when (tag) {
+                    "navpoint" -> depth--
+                    "navlabel" -> inLabel = false
+                }
+            }
+        }
+        return out
+    }
+
+    /**
+     * Extracts an EPUB into [destDir] (kept only while the book is open) and resolves
+     * {title, author, spine: [{uri, size}], toc: [{title, spine, anchor, depth}]}. `epub.json` is
+     * the completion marker: a folder without it is rebuilt.
+     */
+    @ReactMethod
+    fun openEpub(uriString: String, destDir: String, promise: Promise) {
+        executor.execute {
+            val lock = extractionLocks.getOrPut(destDir) { Any() }
+            synchronized(lock) {
+                try {
+                    val dir = File(cleanUri(destDir))
+                    val marker = File(dir, EPUB_MARKER)
+                    if (!marker.exists()) {
+                        resetDir(dir)
+                        extractAllEntries(uriString, dir)
+                        val container = File(dir, "META-INF/container.xml").takeIf { it.exists() }
+                            ?: dir.walkTopDown().firstOrNull { it.name.equals("container.xml", ignoreCase = true) }
+                            ?: throw IllegalStateException("Not an EPUB (container.xml missing)")
+                        val opfPath = opfPathFromContainer(container.readBytes()) ?: throw IllegalStateException("EPUB without package")
+                        val opf = parseOpf(opfPath, File(dir, opfPath).readBytes())
+
+                        val spine = JSONArray()
+                        val spineIndex = HashMap<String, Int>()
+                        opf.spine.mapNotNull { opf.items[it] }.forEach { item ->
+                            val path = opf.pathOf(item)
+                            val file = File(dir, path)
+                            if (!file.exists()) return@forEach
+                            spineIndex[path] = spine.length()
+                            spine.put(JSONObject().put("uri", "file://" + file.absolutePath).put("size", file.length()))
+                        }
+                        if (spine.length() == 0) throw IllegalStateException("EPUB without readable chapters")
+
+                        val nav = opf.items.values.firstOrNull { it.properties.split(' ').contains("nav") }
+                        val ncx = opf.tocId?.let { opf.items[it] }
+                            ?: opf.items.values.firstOrNull { it.mediaType == "application/x-dtbncx+xml" }
+                        var entries = nav?.let { item ->
+                            try { parseNav(opf.pathOf(item), File(dir, opf.pathOf(item)).readBytes()) } catch (_: Exception) { null }
+                        }.orEmpty()
+                        if (entries.isEmpty() && ncx != null) {
+                            entries = try { parseNcx(opf.pathOf(ncx), File(dir, opf.pathOf(ncx)).readBytes()) } catch (_: Exception) { emptyList() }
+                        }
+                        val toc = JSONArray()
+                        entries.forEach { e ->
+                            val index = spineIndex[e.path] ?: return@forEach
+                            toc.put(JSONObject().put("title", e.title).put("spine", index).put("anchor", e.anchor ?: "").put("depth", e.depth))
+                        }
+
+                        val result = JSONObject()
+                            .put("title", opf.title ?: "")
+                            .put("author", opf.author ?: "")
+                            .put("spine", spine)
+                            .put("toc", toc)
+                            .put("rtl", opf.rtl)
+                        val tmp = File(dir, "$EPUB_MARKER.tmp")
+                        tmp.writeText(result.toString())
+                        tmp.renameTo(marker)
+                    }
+                    promise.resolve(jsonToMap(JSONObject(marker.readText())))
+                } catch (e: Exception) {
+                    promise.reject("EPUB_ERROR", e.message, e)
+                } finally {
+                    extractionLocks.remove(destDir)
+                }
+            }
+        }
+    }
+
+    private fun jsonToMap(json: JSONObject): WritableMap {
+        val map = Arguments.createMap()
+        json.keys().forEach { key ->
+            when (val value = json.get(key)) {
+                is JSONObject -> map.putMap(key, jsonToMap(value))
+                is JSONArray -> map.putArray(key, jsonToArray(value))
+                is Int -> map.putInt(key, value)
+                is Long -> map.putDouble(key, value.toDouble())
+                is Number -> map.putDouble(key, value.toDouble())
+                is Boolean -> map.putBoolean(key, value)
+                JSONObject.NULL -> map.putNull(key)
+                else -> map.putString(key, value.toString())
+            }
+        }
+        return map
+    }
+
+    private fun jsonToArray(json: JSONArray): WritableArray {
+        val array = Arguments.createArray()
+        for (i in 0 until json.length()) {
+            when (val value = json.get(i)) {
+                is JSONObject -> array.pushMap(jsonToMap(value))
+                is JSONArray -> array.pushArray(jsonToArray(value))
+                is Int -> array.pushInt(value)
+                is Number -> array.pushDouble(value.toDouble())
+                is Boolean -> array.pushBoolean(value)
+                else -> array.pushString(value.toString())
+            }
+        }
+        return array
+    }
+
     // Required by NativeEventEmitter.
     @ReactMethod
     fun addListener(eventName: String) {}
@@ -649,7 +1095,27 @@ class ComicArchiveModule(reactContext: ReactApplicationContext) : ReactContextBa
 
     companion object {
         private const val MANIFEST = "manifest.json"
-        private const val MANIFEST_VERSION = 2
+        private const val MANIFEST_VERSION = 3
+        private const val EPUB_MARKER = "epub.json"
+
+        /** Archive path of [href] relative to the folder [base] (percent-decoded, `..` resolved). */
+        fun resolvePath(base: String, href: String): String {
+            val decoded = Uri.decode(href)
+            val joined = when {
+                decoded.startsWith("/") -> decoded.drop(1)
+                base.isEmpty() -> decoded
+                else -> "$base/$decoded"
+            }
+            val parts = ArrayList<String>()
+            for (segment in joined.split('/')) {
+                when (segment) {
+                    "", "." -> {}
+                    ".." -> if (parts.isNotEmpty()) parts.removeAt(parts.size - 1)
+                    else -> parts.add(segment)
+                }
+            }
+            return parts.joinToString("/")
+        }
 
         /** Natural, case-insensitive comparison ("2.jpg" < "10.jpg"), path-aware. */
         fun naturalCompare(s1: String, s2: String): Int {

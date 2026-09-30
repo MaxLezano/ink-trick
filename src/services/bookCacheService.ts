@@ -1,12 +1,13 @@
 /**
  * InkTrick - Book cache service
  * Single entry point for everything that touches native book processing:
- * comic page extraction, local PDF copies, covers and cache housekeeping.
+ * comic page extraction, EPUB unpacking, local PDF copies, covers, embedded metadata,
+ * next-volume preloading and cache housekeeping.
  */
 import { NativeModules, NativeEventEmitter, PixelRatio } from 'react-native';
 import { Directory, File, Paths } from 'expo-file-system';
 import { Image } from 'expo-image';
-import { BookFile, PageInfo, TrimBox } from '../utils/types';
+import { BookFile, PageInfo, SupportedFormat, TrimBox } from '../utils/types';
 
 const { ComicArchiveModule } = NativeModules;
 const emitter = ComicArchiveModule ? new NativeEventEmitter(ComicArchiveModule) : null;
@@ -14,6 +15,7 @@ const emitter = ComicArchiveModule ? new NativeEventEmitter(ComicArchiveModule) 
 // Extracted pages and PDF copies are disposable (cache); covers must survive cache purges.
 const COMICS_DIR = new Directory(Paths.cache, 'inktrick_comics_v2');
 const PDF_DIR = new Directory(Paths.cache, 'inktrick_pdf');
+const EPUB_DIR = new Directory(Paths.cache, 'inktrick_epub');
 const COVERS_DIR = new Directory(Paths.document, 'inktrick', 'covers');
 
 // Legacy cache folders from previous versions (safe to delete).
@@ -52,6 +54,10 @@ function requireModule() {
 
 export function isComic(book: Pick<BookFile, 'format'>): boolean {
   return book.format === '.cbr' || book.format === '.cbz';
+}
+
+export function isEpub(book: Pick<BookFile, 'format'>): boolean {
+  return book.format === '.epub';
 }
 
 // ─── Comic pages ─────────────────────────────────────────────────────────────
@@ -96,6 +102,75 @@ export async function getTrimBoxes(bookId: string): Promise<TrimBox[] | null> {
     console.warn('[BookCache] Auto crop failed:', error);
     return null;
   }
+}
+
+// ─── EPUB ────────────────────────────────────────────────────────────────────
+
+export interface EpubChapter {
+  uri: string;
+  size: number;
+}
+
+export interface EpubBook {
+  title: string;
+  author: string;
+  spine: EpubChapter[];
+  toc: { title: string; spine: number; anchor: string; depth: number }[];
+  rtl?: boolean; // Right-to-left book (usually Japanese vertical text): shown horizontally
+}
+
+/** Unpacks an EPUB (only while it is open) and returns its reading order and table of contents. */
+export async function openEpub(book: BookFile): Promise<EpubBook> {
+  ensureDir(EPUB_DIR);
+  const dir = new Directory(EPUB_DIR, book.id);
+  return requireModule().openEpub(book.filePath, dir.uri);
+}
+
+// ─── Embedded metadata ───────────────────────────────────────────────────────
+
+export interface BookInfo {
+  title?: string;
+  series?: string;
+  volume?: string;
+  number?: string;
+  author?: string;
+  summary?: string;
+}
+
+/** Formats whose files can carry metadata (ComicInfo.xml in CBZ, the OPF package in EPUB). */
+export function hasEmbeddedInfo(format: SupportedFormat): boolean {
+  return format === '.cbz' || format === '.epub';
+}
+
+export async function readBookInfo(book: BookFile): Promise<BookInfo | null> {
+  try {
+    return await requireModule().readBookInfo(book.filePath, book.format);
+  } catch {
+    return null;
+  }
+}
+
+// ─── Next volume preloading ──────────────────────────────────────────────────
+
+// Time a preloaded book stays after its claim is released, so the reader that opens it right away
+// ("Siguiente") can take it over before the files are deleted.
+const PRELOAD_HANDOFF_MS = 5000;
+
+/**
+ * Prepares a book in the background (extraction / local copy) so it opens instantly. Returns the
+ * release function; like any open book, the files are deleted once nobody uses them.
+ */
+export function preloadBook(book: BookFile): () => void {
+  retainBookFiles(book.id);
+  const task: Promise<unknown> = (
+    isComic(book) ? getComicPages(book) : isEpub(book) ? openEpub(book) : getLocalPdfUri(book)
+  ).catch(() => {});
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    task.finally(() => setTimeout(() => releaseBookFiles(book.id), PRELOAD_HANDOFF_MS));
+  };
 }
 
 // ─── PDF ─────────────────────────────────────────────────────────────────────
@@ -158,6 +233,12 @@ export async function generateCover(
       const uri: string = page
         ? await mod.createThumbnail(page.uri, target.uri, COVER_MAX_WIDTH)
         : await mod.extractCover(book.filePath, target.uri, pageNumber, COVER_MAX_WIDTH);
+      removeOtherCovers(book.id, target.name);
+      return { uri };
+    }
+
+    if (isEpub(book)) {
+      const uri: string = await mod.extractEpubCover(book.filePath, target.uri, COVER_MAX_WIDTH);
       removeOtherCovers(book.id, target.name);
       return { uri };
     }
@@ -231,6 +312,10 @@ function deleteBookFiles(bookId: string) {
     const pdf = new File(PDF_DIR, `${bookId}.pdf`);
     if (pdf.exists) pdf.delete();
   } catch {}
+  try {
+    const epub = new Directory(EPUB_DIR, bookId);
+    if (epub.exists) epub.delete();
+  } catch {}
 }
 
 /** Deletes everything of books that were removed from the library (including the cover). */
@@ -260,7 +345,7 @@ function legacyRootPdfs(): File[] {
 export function clearReadingCache() {
   // Glide's disk cache only held resized copies of local files: never needed.
   Image.clearDiskCache().catch(() => {});
-  for (const dir of [COMICS_DIR, PDF_DIR, ...LEGACY_DIRS]) {
+  for (const dir of [COMICS_DIR, PDF_DIR, EPUB_DIR, ...LEGACY_DIRS]) {
     try { if (dir.exists) dir.delete(); } catch {}
   }
   for (const file of legacyRootPdfs()) {

@@ -2,6 +2,7 @@ package com.lezma.InkTrick
 
 import android.os.Build
 import android.os.Bundle
+import android.view.KeyEvent
 
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
@@ -24,6 +25,12 @@ class MainActivity : ReactActivity() {
    * rendering of the component.
    */
   override fun getMainComponentName(): String = "main"
+
+  /** Volume keys turn pages while the reader enables it (see [ReaderKeysModule]). */
+  override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+    if (ReaderKeysModule.handle(event)) return true
+    return super.dispatchKeyEvent(event)
+  }
 
   /**
    * Returns the instance of the [ReactActivityDelegate]. We use [DefaultReactActivityDelegate]

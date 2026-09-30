@@ -7,7 +7,9 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import AppNavigator from './src/navigation/AppNavigator';
 import { useLibraryStore } from './src/store/libraryStore';
+import { AppState } from 'react-native';
 import { clearReadingCache } from './src/services/bookCacheService';
+import { runAutoBackupIfDue } from './src/services/backupService';
 import SplashScreen from './src/components/SplashScreen';
 
 export default function App() {
@@ -19,6 +21,15 @@ export default function App() {
     // Books are only decompressed while being read; drop anything left from a previous session.
     clearReadingCache();
     loadLibrary();
+    // Weekly automatic backup (if enabled): checked shortly after launch and when leaving the app.
+    const timer = setTimeout(() => runAutoBackupIfDue().catch(() => {}), 8000);
+    const sub = AppState.addEventListener('change', state => {
+      if (state === 'background') runAutoBackupIfDue().catch(() => {});
+    });
+    return () => {
+      clearTimeout(timer);
+      sub.remove();
+    };
   }, []);
 
   return (

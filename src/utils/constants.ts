@@ -4,7 +4,10 @@
 import { SupportedFormat } from './types';
 
 // ─── Extensiones de archivo soportadas ─────────────────────────────────────
-export const SUPPORTED_EXTENSIONS: SupportedFormat[] = ['.pdf', '.cbr', '.cbz'];
+export const SUPPORTED_EXTENSIONS: SupportedFormat[] = ['.pdf', '.cbr', '.cbz', '.epub'];
+
+// EPUB progress is a position in [0, EPUB_POSITIONS - 1] (text offset), since pages depend on the font.
+export const EPUB_POSITIONS = 10000;
 
 // ─── Tema visual fijo (oscuro) ─────────────────────────────────────────────
 export const COLORS = {
