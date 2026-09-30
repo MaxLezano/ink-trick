@@ -284,7 +284,6 @@ export const DEFAULT_BOOK_SETTINGS: BookSettings = {
   autoCrop: false,
   fullscreen: true,
   volumeKeys: true,
-  invertColors: false,
   textSize: 100,
   textTheme: 'dark',
   textFont: 'book',

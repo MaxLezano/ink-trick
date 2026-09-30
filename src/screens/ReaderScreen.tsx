@@ -578,10 +578,6 @@ export default function ReaderScreen({ navigation, route }: Props) {
   );
 
   // ─── Render ──────────────────────────────────────────────────────────────
-  // Night mode inverts the viewer; its black background is drawn white so it inverts back to black.
-  const inverted = !isEpub && !!settings?.invertColors;
-  const viewerBackground = inverted ? '#FFF' : '#000';
-
   const renderViewer = () => {
     if (!settings || load.status !== 'ready') return null;
     if (isEpub && epubBook) {
@@ -609,7 +605,6 @@ export default function ReaderScreen({ navigation, route }: Props) {
           width={W}
           height={H}
           trims={trims}
-          background={viewerBackground}
           onPageChange={onPageChange}
         />
       );
@@ -637,7 +632,7 @@ export default function ReaderScreen({ navigation, route }: Props) {
             console.error('[ReaderScreen] PDF error:', error);
             setLoad({ status: 'error', message: 'No se pudo renderizar el PDF (¿archivo dañado o con contraseña?).' });
           }}
-          style={{ flex: 1, width: W, height: H, backgroundColor: viewerBackground }}
+          style={{ flex: 1, width: W, height: H, backgroundColor: '#000' }}
         />
       );
     }
@@ -648,7 +643,7 @@ export default function ReaderScreen({ navigation, route }: Props) {
     <View style={styles.container}>
       <StatusBar hidden={!showControls} barStyle="light-content" translucent backgroundColor="transparent" />
 
-      <View style={[styles.viewer, inverted && styles.inverted]}>{renderViewer()}</View>
+      <View style={styles.viewer}>{renderViewer()}</View>
 
       {load.status === 'loading' && (
         <View style={styles.loading}>
@@ -828,9 +823,6 @@ const styles = StyleSheet.create({
   viewer: {
     flex: 1,
   },
-  inverted: {
-    filter: 'invert(1) hue-rotate(180deg)',
-  },
   loading: {
     ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
@@ -929,7 +921,7 @@ const styles = StyleSheet.create({
   },
   titleBox: {
     flex: 1,
-    alignItems: 'center',
+    alignItems: 'flex-start',
   },
   title: {
     color: '#FFF',
@@ -978,9 +970,6 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderRadius: 14,
     backgroundColor: 'rgba(16,16,16,0.96)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.14)',
-    elevation: 12,
   },
   noticeText: {
     color: '#FFF',

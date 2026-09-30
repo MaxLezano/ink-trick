@@ -57,8 +57,6 @@ This file is the **only** project doc: keep it in sync whenever behavior changes
   `ReaderKeysModule` + `MainActivity.dispatchKeyEvent`, enabled only while a reader is ready.
 - Next volume is preloaded (extraction / PDF copy / EPUB unpack) once the reader passes 90%, via
   `preloadBook` (a retain claim released 5 s after leaving, so "Siguiente" takes it over).
-- "Modo noche" (comics / PDF, Android 12+): `filter: invert(1) hue-rotate(180deg)` on the viewer
-  wrapper; the viewer background turns white so it inverts to black.
 - Settings: centered dialog, per book. Presets Manga (paged RTL) / Manhwa (vertical continuous) /
   Cómic (paged LTR) / Libro (paged, never double page); the active one is highlighted by color only.
   Options: scroll direction, paging, reading direction, fit (width / height / full), double page

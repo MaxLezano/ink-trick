@@ -69,7 +69,7 @@ export interface BookSettings {
   usePaging: boolean;
   fitMode: number; // 0: Fit Width, 1: Fit Height, 2: Fit Both
   enableDoubleTapZoom: boolean;
-  brightnessDimmer: number; // 0 to 0.7 (opacity of night mode overlay)
+  brightnessDimmer: number; // 0 to 0.6 (opacity of the black dimmer overlay)
   isRTL: boolean;
   tapToTurn?: boolean;      // Tap left/right edges to turn pages (paged mode)
   keepAwake?: boolean;      // Keep the screen on while reading
@@ -77,7 +77,6 @@ export interface BookSettings {
   autoCrop?: boolean;       // Trim uniform white/black margins (comics)
   fullscreen?: boolean;     // Hide the Android status and navigation bars
   volumeKeys?: boolean;     // Volume down / up turn pages
-  invertColors?: boolean;   // Night mode: black paper, white lines (comics / PDF)
   textSize?: number;        // EPUB: font size in %
   textTheme?: TextTheme;    // EPUB: page colors
   textFont?: TextFont;      // EPUB: typeface

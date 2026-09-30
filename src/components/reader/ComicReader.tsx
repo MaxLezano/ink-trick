@@ -27,8 +27,6 @@ interface Props {
   height: number;
   /** Auto crop boxes (one per page) or null when cropping is off / not computed yet. */
   trims: TrimBox[] | null;
-  /** Color around the pages (white while colors are inverted, so it shows black). */
-  background: string;
   onPageChange: (index: number) => void;
 }
 
@@ -82,7 +80,7 @@ const PageImage = memo(function PageImage({ page, trim, w, h, priority, fullReso
 });
 
 const ComicReader = forwardRef<ComicReaderHandle, Props>(function ComicReader(
-  { pages, initialIndex, settings, width, height, trims, background, onPageChange },
+  { pages, initialIndex, settings, width, height, trims, onPageChange },
   ref,
 ) {
   const listRef = useRef<FlatList<number[]>>(null);
@@ -351,7 +349,7 @@ const ComicReader = forwardRef<ComicReaderHandle, Props>(function ComicReader(
       showsHorizontalScrollIndicator={false}
       showsVerticalScrollIndicator={false}
       decelerationRate={!isWebtoon && settings.usePaging ? 'fast' : 'normal'}
-      style={[styles.list, { backgroundColor: background }]}
+      style={styles.list}
       extraData={[activeIndex, trims, zoomed]}
     />
   );

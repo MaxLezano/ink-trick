@@ -3,7 +3,7 @@
  * Centered dialog with every per-book reading option. Changes apply instantly.
  */
 import React from 'react';
-import { Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Modal, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { BookSettings, DoublePageMode, TextFont, TextTheme } from '../../utils/types';
 import { COLORS } from '../../utils/constants';
 import { RefreshIcon } from '../Icons';
@@ -55,9 +55,6 @@ function Segmented<T>({ label, hint, choices, value, onSelect }: {
     </View>
   );
 }
-
-// Color filters (invert) need Android 12+ (RenderEffect).
-const CAN_INVERT = Platform.OS === 'android' && Number(Platform.Version) >= 31;
 
 const TEXT_SIZES = [85, 100, 115, 130, 150, 175];
 
@@ -239,15 +236,6 @@ export default function ReaderSettingsSheet({ visible, settings, isComic, isEpub
           />
 
           <Text style={styles.section}>Pantalla</Text>
-          {!isEpub && CAN_INVERT && (
-            <Segmented
-              label="Modo noche"
-              hint="Invierte los colores: fondo negro y líneas blancas"
-              choices={onOff}
-              value={settings.invertColors ?? false}
-              onSelect={v => set('invertColors', v)}
-            />
-          )}
           <Segmented
             label="Atenuar brillo"
             choices={[0, 0.2, 0.4, 0.6].map(v => ({ label: `${v * 100}%`, value: v }))}

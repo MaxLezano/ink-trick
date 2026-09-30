@@ -17,7 +17,7 @@ InkTrick lee tus archivos **CBR, CBZ, PDF y EPUB** directamente desde tus carpet
 - **Calidad adaptada a cada pantalla**: las páginas se muestran a la resolución física de la tablet (HD, Full HD, 2K).
 - **Pasar página tocando los bordes**; el menú se abre tocando la parte superior.
 - **Siguiente tomo** al terminar un libro, respetando el orden de la colección.
-- **Teclas de volumen** para pasar página, **modo noche** con colores invertidos, pantalla completa, pantalla siempre encendida y atenuación de brillo.
+- **Teclas de volumen** para pasar página, pantalla completa, pantalla siempre encendida y atenuación de brillo.
 - **Índice de capítulos** (PDF, EPUB y CBZ por carpetas) y **marcadores**.
 - **EPUB** paginado con tamaño de letra, tipografía, interlineado y colores (oscuro, sepia, claro).
 - El **siguiente tomo** se prepara en segundo plano al final del actual, para abrirlo al instante.
@@ -44,7 +44,7 @@ InkTrick reads your **CBR, CBZ, PDF and EPUB** files straight from your folders:
 - Reading presets (Manga RTL, Manhwa vertical, Comic, Book), double-page spreads, pinch and double-tap zoom, auto crop.
 - Pages render at the device's physical resolution.
 - Collections with drag-and-drop reading order, "next volume" button, favorites, search and custom covers.
-- Volume-key page turns, inverted night mode, chapter index (PDF / EPUB / CBZ folders) and bookmarks.
+- Volume-key page turns, chapter index (PDF / EPUB / CBZ folders) and bookmarks.
 - Paginated EPUB with font size, typeface, line spacing and themes; ComicInfo.xml / EPUB metadata.
 - The next volume is prepared in the background near the end of the current one.
 - Reading statistics, exportable backups and an optional weekly automatic backup.
