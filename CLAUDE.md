@@ -94,6 +94,16 @@ npx expo install <pkg>                         # always (keeps SDK 54 versions a
 - Minify/R8 is off. Before enabling it, add keep rules for JNI libs
   (`me.zhanghai.android.libarchive`, pdfium) and test every reader path.
 
+## Brand assets
+
+- Logo: the user's gold brush ensō on a black → violet gradient (`assets/source/logo-original.png`,
+  never overwrite). Launcher icons are adaptive: `mipmap-*/ic_launcher_{foreground,background,
+  monochrome}.webp` (ensō at 47% of the 108dp canvas, user-approved size) + legacy
+  `ic_launcher{,_round}.webp`. `assets/icon.png` / `adaptive-*.png` mirror them for Expo.
+- Play Store listing art lives in `store/`: `play_icon_512.png` and `feature_graphic_1024x500.png`
+  (background generated with local ComfyUI, DreamShaper XL Turbo; logo and text composited on top).
+- ComfyUI runs locally at `http://127.0.0.1:8188` (no MCP server; use its HTTP API).
+
 ## Architecture
 
 ```
@@ -168,9 +178,22 @@ cropped), `getPdfPageCount`, `copyToLocalFile`.
 - `patch-package` fails on Windows (git CRLF warnings): edit the `.patch` by hand (fix hunk
   headers) and verify with `npx patch-package --reverse && npx patch-package`. Patches must contain
   only real source hunks.
-- VS Code's Java extension imported the Gradle plugins inside `node_modules` ("non existing library
-  junit/truth/gradle-test-kit" errors, junk `.classpath/.project/.settings`). It is disabled in
-  `.vscode/settings.json` (`java.import.gradle.enabled: false`); errors were IDE-only.
+- The user's editor is **Antigravity** (VS Code fork) with the Java pack + Gradle extension. They
+  import the Gradle plugins inside `node_modules` and run a Gradle Build Server with a bundled
+  Gradle 8.9 ("Minimum supported Gradle version is 8.13", "non existing library junit/truth", junk
+  `.classpath/.project/.settings`). All IDE-only: the CLI build uses the wrapper (8.14.3). Disabled
+  in `.vscode/settings.json` (`java.import.gradle.enabled: false`,
+  `java.gradle.buildServer.enabled: "off"`, `gradle.autoDetect: "off"`); stale errors need
+  "Java: Clean Java Language Server Workspace" + reload.
+- Storage reads share one in-flight promise (`pendingRead`): parallel first reads used to parse
+  separate copies and drop writes. A corrupt `data.json` falls back to the temp file, else is kept
+  as `data.corrupt-<ts>.json` — never silently replaced by an empty library.
+- Book temp files are reference counted (`retainBookFiles` / `releaseBookFiles`): reopening a book
+  while the previous reader is still closing must not delete the pages the new one uses.
+- Scan merge: name + size only re-identifies a *moved* file (old path gone, id unused), so two
+  copies of a file never share an id. Hidden entries (`.xxx`, macOS `._` forks) are skipped.
+- Callbacks created on mount (animation `.start(cb)`, listeners) must read props through refs:
+  the splash once checked a stale `ready === false` and never closed on fast devices.
 - Git Bash here lacks `rg`/`sd`/`fd`; use the Grep/Glob tools, or `grep`/`python` in scripts.
   Bash heredocs choke on some quoting: write Python edit scripts to a file first.
 
