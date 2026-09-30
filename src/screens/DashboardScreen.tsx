@@ -529,7 +529,7 @@ export default function DashboardScreen({ navigation }: Props) {
               <Text style={styles.emptyTitle}>{books.length === 0 ? 'Tu biblioteca está vacía' : 'No hay carpetas activas'}</Text>
               <Text style={styles.emptyText}>
                 {books.length === 0
-                  ? 'Elige la carpeta donde guardas tus mangas, cómics o PDFs (CBR, CBZ o PDF). InkTrick los encuentra solo, incluso en subcarpetas.'
+                  ? 'Elige la carpeta donde guardas tus mangas, cómics y libros (CBR, CBZ, PDF o EPUB). InkTrick los encuentra solo, incluso en subcarpetas.'
                   : 'Activa al menos una carpeta en el gestor de carpetas para ver tus libros.'}
               </Text>
               <TouchableOpacity style={[styles.primaryBtn, { marginTop: 8 }]} onPress={() => setFoldersModalVisible(true)}>
