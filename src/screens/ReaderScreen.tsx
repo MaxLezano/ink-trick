@@ -7,7 +7,6 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   Alert,
   Animated,
   AppState,
@@ -32,6 +31,7 @@ import * as NavigationBar from 'expo-navigation-bar';
 import { Image } from 'expo-image';
 import { Bookmark, BookFile, BookSettings, PageInfo, ReadingProgress, RootStackParamList, TocItem, TrimBox } from '../utils/types';
 import { COLORS, EPUB_POSITIONS } from '../utils/constants';
+import BambooLoader from '../components/reader/BambooLoader';
 import { useLibraryStore } from '../store/libraryStore';
 import * as StorageService from '../services/storageService';
 import * as BookCache from '../services/bookCacheService';
@@ -655,18 +655,12 @@ export default function ReaderScreen({ navigation, route }: Props) {
             <Image cachePolicy="memory" source={{ uri: book.coverUri }} style={styles.loadingCover} contentFit="cover" />
           ) : null}
           <Text style={styles.loadingTitle} numberOfLines={2}>{book?.title}</Text>
-          <View style={styles.loadingRow}>
-            <ActivityIndicator color={COLORS.accent} />
-            <Text style={styles.loadingText}>
-              {load.label}
-              {load.percentage > 0 ? ` · ${load.percentage}%` : load.current > 0 ? ` · ${load.current} págs.` : ''}
-            </Text>
-          </View>
-          {load.percentage > 0 && (
-            <View style={styles.loadingBar}>
-              <View style={[styles.loadingBarFill, { width: `${load.percentage}%` }]} />
-            </View>
-          )}
+          {/* Comics report real progress (one bamboo per share); PDF / EPUB copies loop. */}
+          <BambooLoader progress={load.percentage > 0 ? load.percentage / 100 : null} />
+          <Text style={styles.loadingText}>
+            {load.label}
+            {load.percentage > 0 ? ` · ${load.percentage}%` : load.current > 0 ? ` · ${load.current} págs.` : ''}
+          </Text>
         </View>
       )}
 
@@ -848,26 +842,10 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     maxWidth: 480,
   },
-  loadingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
   loadingText: {
     color: 'rgba(255,255,255,0.75)',
     fontSize: 14,
     fontWeight: '600',
-  },
-  loadingBar: {
-    width: 260,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: 'rgba(255,255,255,0.15)',
-    overflow: 'hidden',
-  },
-  loadingBarFill: {
-    height: '100%',
-    backgroundColor: '#FFF',
   },
   errorTitle: {
     color: '#FFF',

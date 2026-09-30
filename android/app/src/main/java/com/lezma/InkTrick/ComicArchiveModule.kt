@@ -6,6 +6,8 @@ import android.graphics.Color
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.ParcelFileDescriptor
+import android.system.Os
+import android.system.OsConstants
 import android.util.Xml
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
@@ -24,6 +26,7 @@ import org.xmlpull.v1.XmlPullParser
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FilterInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
 import java.util.Locale
@@ -91,14 +94,18 @@ class ComicArchiveModule(reactContext: ReactApplicationContext) : ReactContextBa
     }
 
     /** Opens a libarchive reader directly on the file descriptor (no temp copy of the archive). */
-    private inline fun <T> withArchive(uriString: String, block: (Long) -> T): T {
+    private inline fun <T> withArchive(uriString: String, block: (Long) -> T): T =
+        withArchiveFd(uriString) { archive, _ -> block(archive) }
+
+    /** Same as [withArchive], also exposing the descriptor (its offset tells how far libarchive read). */
+    private inline fun <T> withArchiveFd(uriString: String, block: (Long, ParcelFileDescriptor) -> T): T {
         val pfd = openReadFd(uriString)
         val archive = Archive.readNew()
         try {
             Archive.readSupportFilterAll(archive)
             Archive.readSupportFormatAll(archive)
             Archive.readOpenFd(archive, pfd.fd, 64 * 1024L)
-            return block(archive)
+            return block(archive, pfd)
         } finally {
             try { Archive.readClose(archive) } catch (_: Exception) {}
             try { Archive.readFree(archive) } catch (_: Exception) {}
@@ -182,10 +189,17 @@ class ComicArchiveModule(reactContext: ReactApplicationContext) : ReactContextBa
      * Sorts raw extracted files by their original archive path (natural order), renames them to
      * `page_NNNN.ext`, measures them and writes the manifest atomically.
      */
-    private fun finalizeExtraction(dir: File, raw: List<Pair<String, File>>): JSONArray {
+    private fun finalizeExtraction(dir: File, raw: List<Pair<String, File>>, bookId: String = ""): JSONArray {
         val sorted = raw.sortedWith { a, b -> naturalCompare(a.first, b.first) }
         val pages = JSONArray()
+        var lastSent = -1
         sorted.forEachIndexed { index, (path, file) ->
+            // Measuring every page is the last stretch of the bar (EXTRACT_SHARE..99).
+            val pct = EXTRACT_SHARE + ((index + 1) * (99 - EXTRACT_SHARE)) / sorted.size
+            if (pct != lastSent) {
+                lastSent = pct
+                sendProgress(bookId, sorted.size, pct)
+            }
             val ext = file.name.substringAfterLast('.', "jpg")
             val finalFile = File(dir, String.format(Locale.US, "page_%04d.%s", index + 1, ext))
             if (!file.renameTo(finalFile)) {
@@ -207,20 +221,45 @@ class ComicArchiveModule(reactContext: ReactApplicationContext) : ReactContextBa
         dir.mkdirs()
     }
 
+    /** Counts the bytes read through it (progress of the zip fallback). */
+    private class CountingInputStream(input: InputStream) : FilterInputStream(input) {
+        var count = 0L
+            private set
+
+        override fun read(): Int = super.read().also { if (it >= 0) count++ }
+
+        override fun read(b: ByteArray, off: Int, len: Int): Int =
+            super.read(b, off, len).also { if (it > 0) count += it }
+
+        override fun skip(n: Long): Long = super.skip(n).also { count += it }
+    }
+
+    /** Bytes of the archive consumed so far: the descriptor's offset (compressed data actually read). */
+    private fun readOffset(pfd: ParcelFileDescriptor): Long = try {
+        Os.lseek(pfd.fileDescriptor, 0L, OsConstants.SEEK_CUR)
+    } catch (_: Exception) {
+        -1L
+    }
+
     private fun extractWithLibarchive(archiveUri: String, dir: File, bookId: String): List<Pair<String, File>> {
         val totalBytes = fileSizeOf(archiveUri).coerceAtLeast(1L)
         val raw = mutableListOf<Pair<String, File>>()
-        var bytesSeen = 0L
-        withArchive(archiveUri) { archive ->
-            forEachEntry<Unit>(archive) { entry, path ->
+        var lastSent = -1
+        withArchiveFd(archiveUri) { archive, pfd ->
+            forEachEntry<Unit>(archive) { _, path ->
                 if (isImageEntry(path)) {
                     val ext = path.substringAfterLast('.', "jpg").lowercase(Locale.ROOT)
                     val out = File(dir, String.format(Locale.US, "raw_%05d.%s", raw.size, ext))
                     writeEntryToFile(archive, out)
                     if (out.length() > 0) {
                         raw.add(Pair(path, out))
-                        bytesSeen += ArchiveEntry.size(entry).coerceAtLeast(out.length())
-                        sendProgress(bookId, raw.size, ((bytesSeen * 100) / totalBytes).toInt().coerceAtMost(99))
+                        // Extraction is the first EXTRACT_SHARE% of the bar; measuring pages the rest.
+                        val read = readOffset(pfd)
+                        val pct = if (read > 0) ((read * EXTRACT_SHARE) / totalBytes).toInt().coerceIn(0, EXTRACT_SHARE) else 0
+                        if (pct != lastSent) {
+                            lastSent = pct
+                            sendProgress(bookId, raw.size, pct)
+                        }
                     } else {
                         out.delete()
                     }
@@ -233,7 +272,9 @@ class ComicArchiveModule(reactContext: ReactApplicationContext) : ReactContextBa
 
     private fun extractWithZip(archiveUri: String, dir: File, bookId: String): List<Pair<String, File>> {
         val raw = mutableListOf<Pair<String, File>>()
-        val stream = openInputStream(archiveUri) ?: return raw
+        val totalBytes = fileSizeOf(archiveUri).coerceAtLeast(1L)
+        val stream = CountingInputStream(openInputStream(archiveUri) ?: return raw)
+        var lastSent = -1
         ZipInputStream(stream).use { zis ->
             var entry: ZipEntry? = zis.nextEntry
             while (entry != null) {
@@ -243,7 +284,11 @@ class ComicArchiveModule(reactContext: ReactApplicationContext) : ReactContextBa
                     FileOutputStream(out).use { zis.copyTo(it) }
                     if (out.length() > 0) {
                         raw.add(Pair(entry.name, out))
-                        sendProgress(bookId, raw.size, 0)
+                        val pct = ((stream.count * EXTRACT_SHARE) / totalBytes).toInt().coerceIn(0, EXTRACT_SHARE)
+                        if (pct != lastSent) {
+                            lastSent = pct
+                            sendProgress(bookId, raw.size, pct)
+                        }
                     }
                 }
                 entry = zis.nextEntry
@@ -298,7 +343,7 @@ class ComicArchiveModule(reactContext: ReactApplicationContext) : ReactContextBa
                         promise.reject("EXTRACTION_ERROR", "No images found in archive")
                         return@execute
                     }
-                    val pages = finalizeExtraction(dir, raw)
+                    val pages = finalizeExtraction(dir, raw, bookId)
                     sendProgress(bookId, pages.length(), 100)
                     promise.resolve(pagesToJs(dir, pages))
                 } catch (e: Exception) {
@@ -1096,6 +1141,8 @@ class ComicArchiveModule(reactContext: ReactApplicationContext) : ReactContextBa
     companion object {
         private const val MANIFEST = "manifest.json"
         private const val MANIFEST_VERSION = 3
+        /** Share of the loading bar taken by extraction; measuring the pages fills the rest. */
+        private const val EXTRACT_SHARE = 90
         private const val EPUB_MARKER = "epub.json"
 
         /** Archive path of [href] relative to the folder [base] (percent-decoded, `..` resolved). */
