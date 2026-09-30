@@ -1,8 +1,8 @@
 # InkTrick
 
-**Lector de manga, manhwa, cómics y PDF para tablets Android** · *Manga, manhwa, comic and PDF reader for Android tablets*
+**Lector de manga, manhwa, cómics y libros para tablets Android** · *Manga, manhwa, comic and book reader for Android tablets*
 
-InkTrick lee tus archivos **CBR, CBZ y PDF** directamente desde tus carpetas, sin cuentas, sin internet y sin publicidad. Todo se procesa en el dispositivo.
+InkTrick lee tus archivos **CBR, CBZ, PDF y EPUB** directamente desde tus carpetas, sin cuentas, sin internet y sin publicidad. Todo se procesa en el dispositivo.
 
 ---
 
@@ -17,7 +17,10 @@ InkTrick lee tus archivos **CBR, CBZ y PDF** directamente desde tus carpetas, si
 - **Calidad adaptada a cada pantalla**: las páginas se muestran a la resolución física de la tablet (HD, Full HD, 2K).
 - **Pasar página tocando los bordes**; el menú se abre tocando la parte superior.
 - **Siguiente tomo** al terminar un libro, respetando el orden de la colección.
-- Pantalla completa, pantalla siempre encendida y atenuación de brillo.
+- **Teclas de volumen** para pasar página, **modo noche** con colores invertidos, pantalla completa, pantalla siempre encendida y atenuación de brillo.
+- **Índice de capítulos** (PDF, EPUB y CBZ por carpetas) y **marcadores**.
+- **EPUB** paginado con tamaño de letra, tipografía, interlineado y colores (oscuro, sepia, claro).
+- El **siguiente tomo** se prepara en segundo plano al final del actual, para abrirlo al instante.
 
 ### Biblioteca
 
@@ -25,7 +28,8 @@ InkTrick lee tus archivos **CBR, CBZ y PDF** directamente desde tus carpetas, si
 - Colecciones con **orden de lectura personalizable** (arrastrar y soltar).
 - Favoritos, recientes, búsqueda y portadas personalizadas.
 - Progreso guardado por libro y **estadísticas de lectura** (tiempo, páginas, racha).
-- **Respaldo** exportable e importable para no perder tu progreso o pasarlo a otra tablet.
+- **Respaldo** exportable e importable, y **respaldo automático semanal** en la carpeta que elijas.
+- Lee los datos de `ComicInfo.xml` (CBZ) y de los EPUB: título, serie, tomo y autor.
 
 ### Privacidad
 
@@ -35,12 +39,15 @@ InkTrick no pide permisos, no usa internet y no recopila datos. Los libros solo 
 
 ## English
 
-InkTrick reads your **CBR, CBZ and PDF** files straight from your folders: no accounts, no internet, no ads.
+InkTrick reads your **CBR, CBZ, PDF and EPUB** files straight from your folders: no accounts, no internet, no ads.
 
 - Reading presets (Manga RTL, Manhwa vertical, Comic, Book), double-page spreads, pinch and double-tap zoom, auto crop.
 - Pages render at the device's physical resolution.
 - Collections with drag-and-drop reading order, "next volume" button, favorites, search and custom covers.
-- Reading statistics and exportable backups.
+- Volume-key page turns, inverted night mode, chapter index (PDF / EPUB / CBZ folders) and bookmarks.
+- Paginated EPUB with font size, typeface, line spacing and themes; ComicInfo.xml / EPUB metadata.
+- The next volume is prepared in the background near the end of the current one.
+- Reading statistics, exportable backups and an optional weekly automatic backup.
 - No permissions, no network access, no data collection.
 
 ---

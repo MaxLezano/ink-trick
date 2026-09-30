@@ -1,6 +1,7 @@
 # InkTrick — Claude working notes
 
-Offline manga / manhwa / comic / PDF reader for Android tablets, headed for Google Play.
+Offline manga / manhwa / comic / book (PDF, EPUB) reader for Android tablets, headed for Google Play.
+Marketing copy lists "Manga · Manhwa · Cómics · Libros" (never "PDF").
 React Native 0.81 + Expo SDK 54 (bare workflow, custom native module), TypeScript, Zustand.
 This file is the **only** project doc: keep it in sync whenever behavior changes.
 
@@ -27,8 +28,11 @@ This file is the **only** project doc: keep it in sync whenever behavior changes
 100% offline and local, no telemetry or accounts.
 
 **Library (Dashboard)**
-- Folders are picked with SAF and scanned recursively for `.pdf/.cbr/.cbz` (+ `cover.jpg` next to
-  files). Rescans on launch (silent) and with the refresh button (spinner + banner).
+- Folders are picked with SAF and scanned recursively for `.pdf/.cbr/.cbz/.epub` (+ `cover.jpg`
+  next to files). Rescans on launch (silent) and with the refresh button (spinner + banner).
+- Embedded metadata is read once per book after the covers (`infoChecked`): `ComicInfo.xml` in CBZ
+  (not CBR: scanning solid RARs is too slow) and the OPF of EPUBs. It sets title ("Series Vol. N:
+  Title"), author, series, volume, summary; rescans keep it. Search also matches author / series.
 - Home: header icons (search, "Mi lectura", folders, refresh) · "Continuar leyendo" hero (opens ONLY
   from its "Continuar" button) with a "Recientes →" link · Favoritos carousel · one carousel per
   collection. No greeting, week strip or "in progress" carousel (user removed them).
@@ -43,7 +47,18 @@ This file is the **only** project doc: keep it in sync whenever behavior changes
 - Tap zones (`src/components/reader/tapZones.ts`, shared by comic + PDF): the top band (~9.5% of
   the height) opens the controls; narrow edge strips (17% width, 12–90% height) turn pages
   (mirrored in RTL); everything else does nothing. Controls close ONLY with their ✕ button.
-- Controls: top bar (back, title, settings, ✕) + bottom page scrubber (reversed in RTL).
+- Controls: top bar (back, title + author/collection, índice, bookmark toggle, settings, ✕) + bottom
+  page scrubber (reversed in RTL, vermilion ticks at bookmarks).
+- Índice dialog: "Capítulos" (PDF outline from `onLoadComplete`'s tableContents, EPUB nav/NCX, CBZ
+  chapter folders when there are ≥ 2) and "Marcadores" (jump / remove). Many PDFs have no outline
+  (e.g. the user's Solo Leveling arcs: empty `/Outlines`): then the dialog is just "Marcadores"
+  (no tabs, no empty chapter list).
+- Volume keys turn pages (down = next, up = previous; setting "Teclas de volumen", default on):
+  `ReaderKeysModule` + `MainActivity.dispatchKeyEvent`, enabled only while a reader is ready.
+- Next volume is preloaded (extraction / PDF copy / EPUB unpack) once the reader passes 90%, via
+  `preloadBook` (a retain claim released 5 s after leaving, so "Siguiente" takes it over).
+- "Modo noche" (comics / PDF, Android 12+): `filter: invert(1) hue-rotate(180deg)` on the viewer
+  wrapper; the viewer background turns white so it inverts to black.
 - Settings: centered dialog, per book. Presets Manga (paged RTL) / Manhwa (vertical continuous) /
   Cómic (paged LTR) / Libro (paged, never double page); the active one is highlighted by color only.
   Options: scroll direction, paging, reading direction, fit (width / height / full), double page
@@ -54,9 +69,20 @@ This file is the **only** project doc: keep it in sync whenever behavior changes
 - Last page → "Terminaste este tomo" card with a "Siguiente" button (next book of the series).
 - Double page and auto crop are comic-only (Pdfium cannot do them).
 
+**EPUB** (`EpubReader`): unpacked natively to `cache/inktrick_epub/<id>/` while open; each spine
+file loads in a WebView and is paginated with CSS columns (injected `window.__ink` engine: swipes,
+edge taps, links → chapter/anchor, web links blocked). Text settings: size (`textZoom`), theme
+(Oscuro / Sepia / Claro), font (del libro / serif / sans), line height. Progress is a *position*
+0..`EPUB_POSITIONS`-1 (10000) proportional to chapter file sizes, never stored as `pageCount`;
+the reader reports page turns explicitly for stats. Bookmarks / toc use positions too.
+Right-to-left EPUBs (`page-progression-direction="rtl"`, Japanese vertical text) are shown
+horizontally left to right, with a 7 s notice saying so (no vertical layout support).
+
 **Mi lectura (Stats)**: today / week / streak / finished tiles, 14-day minutes chart, most-read
 books, backup export (JSON to a picked folder) and import (merge; books matched by path, then name
-+ size). Reading time accumulates between page turns (gaps > 5 min ignored); only 1–2 page steps
++ size; bookmarks merged). Weekly automatic backup (optional): folder picked once
+(`autoBackup` in data.json), written ~8 s after launch and when the app goes to background if 7
+days passed, as `inktrick-auto-<stamp>.json`; only the newest 3 of those files are kept. Reading time accumulates between page turns (gaps > 5 min ignored); only 1–2 page steps
 count as read pages (scrubber jumps do not).
 
 **Splash**: `src/components/SplashScreen.tsx` over the navigator: "InkTrick", インクトリック and an
@@ -119,6 +145,8 @@ src/components/
   library/ReorderGrid.tsx    sortable grid (RNGH pan after long press + Reanimated springs)
   reader/ComicReader.tsx     CBR/CBZ: 1–2 page "slots" (spreads), paged H (LTR/RTL), paged V, webtoon
                              strip; exact getItemLayout; auto-crop boxes; full-res decode while zoomed
+  reader/EpubReader.tsx      EPUB: WebView per chapter, CSS-column pagination, positions
+  reader/ReaderIndexSheet.tsx  chapters + bookmarks dialog
   reader/ZoomableView.tsx    pinch / pan with decay / double tap / single tap
   reader/PageScrubber.tsx    draggable page slider
   reader/ReaderSettingsSheet.tsx  settings dialog + presets
@@ -127,16 +155,18 @@ src/store/libraryStore.ts    Zustand store + pure selectors (selectActiveBooks, 
 src/services/
   bookCacheService.ts        ONLY bridge to ComicArchiveModule: pages, PDF copies, covers, cache
   storageService.ts          JSON persistence (atomic write), progress, settings, exclusions, stats
-  backupService.ts           export/import JSON backup via SAF
+  backupService.ts           export/import JSON backup via SAF, weekly automatic backup
   fileScanner.ts             recursive SAF scan (yields to the UI between folders)
 src/utils/format.ts          natural sort, sortSeries, short titles, seriesKeyOf, bytes, durations
 android/app/src/main/java/com/lezma/InkTrick/ComicArchiveModule.kt   native module (libarchive)
+android/app/src/main/java/com/lezma/InkTrick/ReaderKeysModule.kt     volume keys -> onVolumeKey
 patches/react-native-pdf+7.0.4.patch   PdfView.java: ARGB_8888 tiles, fitEachPage, RTL page fix
 ```
 
 Native module methods: `extractAllImages`, `getCachedPages`, `computeTrimBoxes` (auto crop,
-cached in `trim.json`), `extractCover` / `createThumbnail` / `renderPdfCover` (covers, margins
-cropped), `getPdfPageCount`, `copyToLocalFile`.
+cached in `trim.json`), `extractCover` / `createThumbnail` / `renderPdfCover` / `extractEpubCover` (covers,
+margins cropped), `getPdfPageCount`, `copyToLocalFile`, `readBookInfo` (ComicInfo / OPF),
+`openEpub` (unpack + spine + toc; `epub.json` is its completion marker; zip-slip safe).
 
 ### Rendering pipeline
 
@@ -147,8 +177,8 @@ cropped), `getPdfPageCount`, `copyToLocalFile`.
 - **PDF**: `react-native-pdf` (Pdfium, vector, tile rendering). SAF files are copied atomically
   to `cache/inktrick_pdf/<id>.pdf` while open. Page count is fetched natively **before** mounting.
 - **CBR/CBZ**: native extraction to `cache/inktrick_comics_v2/<id>/page_NNNN.ext`, sorted by the
-  original archive path (natural order). `manifest.json` (version 2, each page's w/h) is the
-  completion marker — a folder without it is a partial extraction and gets rebuilt.
+  original archive path (natural order). `manifest.json` (version 3, each page's w/h and archive
+  folder = chapter) is the completion marker — a folder without it is a partial extraction and gets rebuilt.
 - Images render with `expo-image`, `cachePolicy="memory"` (no disk cache of local files).
 - Covers: JPEG thumbnails sized to the screen density (~240dp), margins cropped, in
   `files/inktrick/covers/<id>_c2_p<page>.jpg` (persistent). Bump `COVER_VERSION` to regenerate all.
@@ -157,7 +187,7 @@ cropped), `getPdfPageCount`, `copyToLocalFile`.
 ### Data model / persistence
 
 - `files/inktrick/data.json`: library, progress, bookSettings, seriesSettings, scannedFolders,
-  excludedPaths, stats (days / books / finished). Writes are serialized through `data.json.tmp` → move.
+  excludedPaths, stats (days / books / finished), bookmarks, autoBackup. Writes are serialized through `data.json.tmp` → move.
 - Book identity = `filePath`; rescans merge by path, falling back to `fileName + fileSize`.
 - Progress: `currentPage` is the 0-based logical page; `percentage` 0–100. A finished book reopens
   at page 1. Progress is flushed on `beforeRemove` and when the app goes to background.
@@ -194,6 +224,11 @@ cropped), `getPdfPageCount`, `copyToLocalFile`.
   copies of a file never share an id. Hidden entries (`.xxx`, macOS `._` forks) are skipped.
 - Callbacks created on mount (animation `.start(cb)`, listeners) must read props through refs:
   the splash once checked a stale `ready === false` and never closed on fast devices.
+- `navigation.replace` ("Siguiente") mounts the new reader *before* the old one unmounts: global
+  switches owned by a reader (volume keys, book files) must be reference counted, or the old
+  reader's cleanup turns them off under the new one.
+- react-native-webview must keep `scalesPageToFit={false}` (else pages lay out 980 px wide) and
+  the EPUB engine blocks `touchmove` so the page never free-scrolls between columns.
 - Git Bash here lacks `rg`/`sd`/`fd`; use the Grep/Glob tools, or `grep`/`python` in scripts.
   Bash heredocs choke on some quoting: write Python edit scripts to a file first.
 
