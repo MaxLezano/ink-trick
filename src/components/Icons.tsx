@@ -117,6 +117,14 @@ export const RefreshIcon: React.FC<IconProps> = ({ size = 18, color = '#0A0A0A' 
   </Base>
 );
 
+/** Ensō: a single open brush circle, thicker where the stroke starts (tutorial). */
+export const EnsoIcon: React.FC<IconProps> = ({ size = 20, color = '#FFFFFF' }) => (
+  <Base size={size}>
+    <Path d="M14.8 4.6a7.6 7.6 0 1 0 4.9 5.3" {...stroke(color, 2.4)} />
+    <Path d="M19.7 9.9c-.3-1.1-.8-2-1.4-2.8" {...stroke(color, 1.2)} />
+  </Base>
+);
+
 /** Search: an ensō lens with a brush handle. */
 export const SearchIcon: React.FC<IconProps> = ({ size = 20, color = '#FFFFFF' }) => (
   <Base size={size}>

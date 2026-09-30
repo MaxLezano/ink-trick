@@ -57,7 +57,7 @@ function BookCard({ book, title, width, percentage, selectionMode, selected, onP
         )}
 
         {percentage >= 100 ? (
-          // Hanko-style seal.
+          // Hanko-style seal in the logo's gold.
           <View style={styles.readSeal} accessibilityLabel="Leído">
             <Text style={styles.readSealText}>LEÍDO</Text>
           </View>
@@ -72,7 +72,7 @@ function BookCard({ book, title, width, percentage, selectionMode, selected, onP
 
         {book.isFavorite && !selectionMode && (
           <View style={styles.favorite}>
-            <StarIcon size={16} color={COLORS.sakura} filled />
+            <StarIcon size={16} color={COLORS.wisteria} filled />
           </View>
         )}
 
@@ -153,14 +153,14 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     borderRadius: 6,
     borderWidth: 1.5,
-    borderColor: 'rgba(255,245,236,0.9)',
-    backgroundColor: COLORS.seal,
+    borderColor: 'rgba(36,16,64,0.55)',
+    backgroundColor: COLORS.gold,
     alignItems: 'center',
     justifyContent: 'center',
     transform: [{ rotate: '-8deg' }],
   },
   readSealText: {
-    color: '#FFF5EC',
+    color: COLORS.inkViolet,
     fontSize: 11,
     fontWeight: '900',
     letterSpacing: 1,

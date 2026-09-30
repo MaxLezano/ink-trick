@@ -31,6 +31,7 @@ interface StorageData {
   stats?: ReadingStats;
   bookmarks?: Record<string, Bookmark[]>;
   autoBackup?: AutoBackupConfig;
+  tourSeenAt?: number; // Guided tour finished or skipped: it no longer starts by itself
 }
 
 export type StorageSnapshot = StorageData;
@@ -391,6 +392,20 @@ export async function saveAutoBackup(config: AutoBackupConfig | null): Promise<v
   const data = await readData();
   if (config) data.autoBackup = config;
   else delete data.autoBackup;
+  await writeData(data);
+}
+
+// ─── Guided tour ───────────────────────────────────────────────────────────
+
+export async function isTourSeen(): Promise<boolean> {
+  const data = await readData();
+  return !!data.tourSeenAt;
+}
+
+export async function markTourSeen(): Promise<void> {
+  const data = await readData();
+  if (data.tourSeenAt) return;
+  data.tourSeenAt = Date.now();
   await writeData(data);
 }
 

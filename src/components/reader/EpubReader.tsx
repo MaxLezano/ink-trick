@@ -42,9 +42,9 @@ interface Nav {
 }
 
 export const TEXT_THEMES: Record<TextTheme, { bg: string; fg: string; link: string }> = {
-  dark: { bg: '#101010', fg: '#DAD6CE', link: '#F4A7B9' },
-  sepia: { bg: '#F3EAD6', fg: '#3A2F22', link: '#A34A2A' },
-  light: { bg: '#FAFAF7', fg: '#1B1B1B', link: '#C8412E' },
+  dark: { bg: '#101010', fg: '#DAD6CE', link: '#B89BDD' },
+  sepia: { bg: '#F3EAD6', fg: '#3A2F22', link: '#6E3F8F' },
+  light: { bg: '#FAFAF7', fg: '#1B1B1B', link: '#5B2C83' },
 };
 
 const FONTS: Record<TextFont, string> = {

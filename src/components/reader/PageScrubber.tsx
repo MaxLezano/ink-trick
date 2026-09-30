@@ -127,7 +127,7 @@ const styles = StyleSheet.create({
     height: 12,
     borderRadius: 1.5,
     top: 12,
-    backgroundColor: COLORS.seal,
+    backgroundColor: COLORS.gold,
   },
   thumb: {
     position: 'absolute',

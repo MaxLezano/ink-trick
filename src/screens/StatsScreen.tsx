@@ -1,6 +1,6 @@
 /**
  * InkTrick - "Mi lectura"
- * Reading statistics and backup (export / import).
+ * Reading statistics, backup (export / import) and replaying the guided tour.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
@@ -24,6 +24,7 @@ import * as StorageService from '../services/storageService';
 import * as BackupService from '../services/backupService';
 import { formatDuration, formatRelativeDate } from '../utils/format';
 import { BackIcon } from '../components/Icons';
+import { Tour } from '../components/tour/tour';
 
 type Props = {
   navigation: StackNavigationProp<RootStackParamList, 'Stats'>;
@@ -294,7 +295,7 @@ export default function StatsScreen({ navigation }: Props) {
               carpeta se sincroniza con otra tablet, allí puedes importarla.
             </Text>
             {auto ? (
-              <Text style={[styles.cardHint, auto.lastError ? { color: COLORS.seal } : null]}>
+              <Text style={[styles.cardHint, auto.lastError ? { color: COLORS.gold } : null]}>
                 {auto.lastError
                   ? `Último intento falló: ${auto.lastError}`
                   : `Activo en "${auto.folderName}"${auto.lastAt ? ` · último ${formatRelativeDate(auto.lastAt)}` : ''}`}
@@ -316,6 +317,23 @@ export default function StatsScreen({ navigation }: Props) {
             </View>
           </View>
 
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Tutorial</Text>
+            <Text style={styles.cardText}>
+              Vuelve a ver el recorrido guiado: para qué sirve cada botón de la biblioteca y cómo se usa el lector.
+            </Text>
+            <View style={[styles.row, styles.rowEnd]}>
+              <TouchableOpacity
+                style={styles.outlineBtn}
+                onPress={() => {
+                  navigation.goBack();
+                  Tour.start();
+                }}
+              >
+                <Text style={styles.outlineBtnText}>Ver tutorial</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
         </ScrollView>
       )}
     </View>

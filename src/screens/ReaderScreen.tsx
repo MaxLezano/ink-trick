@@ -712,7 +712,7 @@ export default function ReaderScreen({ navigation, route }: Props) {
               onPress={toggleBookmark}
               accessibilityLabel={isBookmarked ? 'Quitar marcador' : 'Marcar esta página'}
             >
-              <BookmarkIcon size={18} color={isBookmarked ? COLORS.seal : '#FFF'} filled={isBookmarked} />
+              <BookmarkIcon size={18} color={isBookmarked ? COLORS.gold : '#FFF'} filled={isBookmarked} />
             </TouchableOpacity>
             <TouchableOpacity style={styles.iconBtn} onPress={() => setShowSettings(true)} accessibilityLabel="Ajustes">
               <GearIcon size={20} color="#FFF" />

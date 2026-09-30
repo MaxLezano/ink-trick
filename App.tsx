@@ -11,6 +11,7 @@ import { AppState } from 'react-native';
 import { clearReadingCache } from './src/services/bookCacheService';
 import { runAutoBackupIfDue } from './src/services/backupService';
 import SplashScreen from './src/components/SplashScreen';
+import TourOverlay from './src/components/tour/TourOverlay';
 
 export default function App() {
   const loadLibrary = useLibraryStore(state => state.loadLibrary);
@@ -36,7 +37,7 @@ export default function App() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
         <AppNavigator />
-        {showSplash && <SplashScreen ready={isLoaded} onFinish={() => setShowSplash(false)} />}
+        {showSplash ? <SplashScreen ready={isLoaded} onFinish={() => setShowSplash(false)} /> : <TourOverlay />}
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );

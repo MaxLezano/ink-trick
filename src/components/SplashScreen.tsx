@@ -88,6 +88,6 @@ const styles = StyleSheet.create({
   barInner: {
     height: '100%',
     borderRadius: 1.5,
-    backgroundColor: 'rgba(240,240,240,0.75)',
+    backgroundColor: COLORS.gold,
   },
 });

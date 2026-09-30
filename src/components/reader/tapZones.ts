@@ -13,9 +13,9 @@
 /** Height of the top band that opens the controls, as a fraction of the screen height. */
 export const MENU_BAND = 0.095;
 
-const EDGE_WIDTH = 0.17;
-const EDGE_TOP = 0.12;
-const EDGE_BOTTOM = 0.9;
+export const EDGE_WIDTH = 0.17;
+export const EDGE_TOP = 0.12;
+export const EDGE_BOTTOM = 0.9;
 
 export type TurnSide = 'left' | 'right' | null;
 

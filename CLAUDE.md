@@ -23,8 +23,8 @@ This file is the **only** project doc: keep it in sync whenever behavior changes
 
 ## Product behavior
 
-**Principles**: dark minimalist look (black / grays / white, vermilion `COLORS.seal` and sakura pink
-`COLORS.sakura` as the only accents, Japanese ink-brush icon motifs); the page owns the screen;
+**Principles**: dark minimalist look (black / grays / white; the only accents come from the logo: kin-iro gold
+`COLORS.gold` and fuji-iro wisteria `COLORS.wisteria` — no reds or pinks; Japanese ink-brush icon motifs); the page owns the screen;
 100% offline and local, no telemetry or accounts.
 
 **Library (Dashboard)**
@@ -42,14 +42,20 @@ This file is the **only** project doc: keep it in sync whenever behavior changes
 - Long press a card → selection mode → ⋮ menu: add/remove favorites (label reflects state), mark
   read / unread, change cover (page number), move to collection (dismissable), remove from library
   (files stay on disk and are skipped by future scans).
-- Finished books show a vermilion hanko-style "LEÍDO" seal; favorites a filled sakura.
+- Finished books show a gold hanko-style "LEÍDO" seal; favorites a filled wisteria-colored sakura.
+- Guided tour (`src/components/tour/`, ported from the user's GymBro app): dims the screen and
+  spotlights one element at a time (gold ring) with a bubble (Atrás / Siguiente / Saltar). Stops: welcome,
+  folders, refresh, search, Mi lectura, hero, first collection header, its first card, reader tap
+  zones (diagram built from `tapZones.ts`), done. Stops whose target is not mounted (no hero yet) are
+  left out when leaving the welcome step. Auto-starts once, the first time the home screen shows
+  books; finishing or skipping sets `tourSeenAt` in data.json. Replay: "Mi lectura" → "Ver tutorial".
 
 **Reader**
 - Tap zones (`src/components/reader/tapZones.ts`, shared by comic + PDF): the top band (~9.5% of
   the height) opens the controls; narrow edge strips (17% width, 12–90% height) turn pages
   (mirrored in RTL); everything else does nothing. Controls close ONLY with their ✕ button.
 - Controls: top bar (back, title + author/collection, índice, bookmark toggle, settings, ✕) + bottom
-  page scrubber (reversed in RTL, vermilion ticks at bookmarks).
+  page scrubber (reversed in RTL, gold ticks at bookmarks).
 - Índice dialog: "Capítulos" (PDF outline from `onLoadComplete`'s tableContents, EPUB nav/NCX, CBZ
   chapter folders when there are ≥ 2) and "Marcadores" (jump / remove). Many PDFs have no outline
   (e.g. the user's Solo Leveling arcs: empty `/Outlines`): then the dialog is just "Marcadores"
@@ -130,7 +136,8 @@ npx expo install <pkg>                         # always (keeps SDK 54 versions a
   `ic_launcher{,_round}.webp`. `assets/icon.png` / `adaptive-*.png` mirror them for Expo.
 - Play Store listing art lives in `store/`: `play_icon_512.png` and `feature_graphic_1024x500.png`
   (background generated with local ComfyUI, DreamShaper XL Turbo; logo and text composited on top).
-- ComfyUI runs locally at `http://127.0.0.1:8188` (no MCP server; use its HTTP API).
+- ComfyUI Desktop runs locally at `http://127.0.0.1:8000` (RTX 3080, 12 GB). MCP server `comfyui`
+  (npm `comfyui-mcp`, user scope, `COMFYUI_URL` set) exposes it; the HTTP API works too.
 
 ## Architecture
 
@@ -153,6 +160,7 @@ src/components/
   reader/PageScrubber.tsx    draggable page slider
   reader/ReaderSettingsSheet.tsx  settings dialog + presets
   reader/tapZones.ts         shared tap zone geometry
+  tour/                      guided tour: tour.ts (store), TourTarget, steps.ts, TourOverlay (App.tsx)
 src/store/libraryStore.ts    Zustand store + pure selectors (selectActiveBooks, selectRecent, ...)
 src/services/
   bookCacheService.ts        ONLY bridge to ComicArchiveModule: pages, PDF copies, covers, cache
@@ -189,7 +197,7 @@ margins cropped), `getPdfPageCount`, `copyToLocalFile`, `readBookInfo` (ComicInf
 ### Data model / persistence
 
 - `files/inktrick/data.json`: library, progress, bookSettings, seriesSettings, scannedFolders,
-  excludedPaths, stats (days / books / finished), bookmarks, autoBackup. Writes are serialized through `data.json.tmp` → move.
+  excludedPaths, stats (days / books / finished), bookmarks, autoBackup, tourSeenAt. Writes are serialized through `data.json.tmp` → move.
 - Book identity = `filePath`; rescans merge by path, falling back to `fileName + fileSize`.
 - Progress: `currentPage` is the 0-based logical page; `percentage` 0–100. A finished book reopens
   at page 1. Progress is flushed on `beforeRemove` and when the app goes to background.
@@ -239,8 +247,11 @@ margins cropped), `getPdfPageCount`, `copyToLocalFile`, `readBookInfo` (ComicInf
 - Physical tablet: `Tab_C10Pro` (Allwinner A523, 4 GB RAM, Android 13, 800×1280 @ 160 dpi), adb id
   `C10P91468240029`. If it shows `offline`, accept the USB debugging prompt on the tablet.
   Its library lives in `/sdcard/Libros/Anime` (PDF + CBR). The user also reads on a 2K tablet.
-- Emulator: AVD `Pixel_Tablet` (`emulator-5554`, 1600×2560). Test data in `/sdcard/Manga`
-  (JJK `.cbr` volumes, Solo Leveling webtoon `.pdf` arcs).
+- Emulator: AVD `Medium_Tablet` (`emulator-5554`, 1600×2560, reports itself as "Pixel Tablet").
+  Test data in `/sdcard/Manga` (JJK `.cbr` volumes, Solo Leveling webtoon `.pdf` arcs).
+  Launch from Bash with `run_in_background` (`emulator.exe -avd Medium_Tablet`); a plain `&` dies
+  with the shell. If mouse clicks land offset from the pointer (window resized / moved between
+  monitors with different Windows scaling), restart the emulator.
 - Screenshots shown to the model are scaled: multiply displayed coordinates by 1.28 for
   `adb shell input tap`. On the emulator, taps at y < ~60 px open the system caption bar; use
   y ≈ 130 for the reader's top band.

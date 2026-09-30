@@ -126,7 +126,7 @@ export default function ReaderIndexSheet({
               renderItem={({ item }) => (
                 <View style={[styles.row, item.page === current && styles.rowActive]}>
                   <TouchableOpacity style={styles.markMain} onPress={() => onSelectPage(item.page)}>
-                    <BookmarkIcon size={16} color={COLORS.seal} filled />
+                    <BookmarkIcon size={16} color={COLORS.gold} filled />
                     <Text style={styles.rowTitle}>{labelFor(item.page)}</Text>
                     <Text style={styles.rowMeta}>{formatRelativeDate(item.createdAt)}</Text>
                   </TouchableOpacity>

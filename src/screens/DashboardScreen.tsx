@@ -4,7 +4,7 @@
  * recent books, a collection or search results.
  * Long press a card to select books.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -32,6 +32,10 @@ import { belongsToFolder, matchesQuery, selectActiveBooks, selectRecent, useLibr
 import { formatBytes, formatRelativeDate, shortTitles, sortBooksNatural, sortSeries } from '../utils/format';
 import BookCard from '../components/library/BookCard';
 import ReorderGrid from '../components/library/ReorderGrid';
+import TourTarget from '../components/tour/TourTarget';
+import { measureTarget, Tour, useTour } from '../components/tour/tour';
+import { TOUR_STEPS } from '../components/tour/steps';
+import { isTourSeen } from '../services/storageService';
 import {
   ArrowIcon,
   BackIcon,
@@ -184,10 +188,62 @@ export default function DashboardScreen({ navigation }: Props) {
     setOptionsVisible(false);
   }, []);
 
+  // Guided tour: auto-starts once, the first time the library shows books on the home screen.
+  const tour = useTour();
+  const [tourSeen, setTourSeen] = useState<boolean | null>(null);
+  const homeScrollRef = useRef<ScrollView>(null);
+  useEffect(() => {
+    isTourSeen().then(setTourSeen).catch(() => setTourSeen(true));
+  }, []);
+  useEffect(() => {
+    if (tourSeen !== false || isScanning || foldersModalVisible || section !== null || selectionMode) return;
+    if (activeBooks.length === 0) return;
+    const timer = setTimeout(() => {
+      setTourSeen(true);
+      Tour.start();
+    }, 900);
+    return () => clearTimeout(timer);
+  }, [activeBooks.length, foldersModalVisible, isScanning, section, selectionMode, tourSeen]);
+  // Whenever the tour runs (also replayed from "Mi lectura"), show the plain home screen.
+  useEffect(() => {
+    if (!tour.active) return;
+    cancelSelection();
+    setSection(null);
+    setSearchOpen(false);
+    actions.setSearchQuery('');
+    setFoldersModalVisible(false);
+    setGroupModalVisible(false);
+    setCoverModalVisible(false);
+    homeScrollRef.current?.scrollTo({ y: 0, animated: false });
+  }, [actions, cancelSelection, tour.active]);
+  // Home stops (hero, collection, card) scroll into the upper part of the screen before the
+  // overlay measures them, leaving room for the bubble below.
+  const homeScrollY = useRef(0);
+  useEffect(() => {
+    const id = tour.active ? TOUR_STEPS[tour.order[tour.index]]?.target : undefined;
+    const scroll = homeScrollRef.current;
+    if (!id?.startsWith('home.') || !scroll) return;
+    Promise.all([
+      measureTarget(id),
+      new Promise<{ y: number; height: number }>(resolve => {
+        const host = scroll.getNativeScrollRef();
+        if (host) host.measureInWindow((_x, y, _w, height) => resolve({ y, height }));
+        else resolve({ y: 0, height: 0 });
+      }),
+    ]).then(([target, view]) => {
+      if (!target || view.height === 0) return;
+      const margin = 24;
+      if (target.y < view.y + margin || target.y + target.height > view.y + view.height * 0.55) {
+        scroll.scrollTo({ y: Math.max(0, homeScrollY.current + target.y - view.y - margin), animated: false });
+      }
+    });
+  }, [tour.active, tour.index, tour.order]);
+
   // Hardware back: leave selection / search / section before leaving the app.
   useFocusEffect(
     useCallback(() => {
       const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+        if (tour.active) return false; // the tour overlay handles it
         if (selectionMode) {
           cancelSelection();
           return true;
@@ -208,7 +264,7 @@ export default function DashboardScreen({ navigation }: Props) {
         return false;
       });
       return () => sub.remove();
-    }, [actions, cancelSelection, reorderIds, searchOpen, section, selectionMode]),
+    }, [actions, cancelSelection, reorderIds, searchOpen, section, selectionMode, tour.active]),
   );
 
   // ─── Handlers ────────────────────────────────────────────────────────────
@@ -331,23 +387,39 @@ export default function DashboardScreen({ navigation }: Props) {
     />
   );
 
-  const renderCarousel = (key: string, label: string, data: BookFile[], inCollection: boolean, icon?: React.ReactNode) => (
+  // tourTargets: this carousel's header and first card are the tour's "collection" / "card" stops.
+  const renderCarousel = (
+    key: string,
+    label: string,
+    data: BookFile[],
+    inCollection: boolean,
+    icon?: React.ReactNode,
+    tourTargets = false,
+  ) => (
     <View key={key} style={styles.carouselSection}>
-      <TouchableOpacity style={styles.carouselHeader} onPress={() => setSection(key)} activeOpacity={0.7}>
-        <View style={styles.carouselTitleRow}>
-          {icon}
-          <Text style={styles.carouselTitle} numberOfLines={1}>{label}</Text>
-          <View style={styles.countPill}>
-            <Text style={styles.countPillText}>{data.length}</Text>
+      <TourTarget id={tourTargets ? 'home.collection' : `carousel.${key}`}>
+        <TouchableOpacity style={styles.carouselHeader} onPress={() => setSection(key)} activeOpacity={0.7}>
+          <View style={styles.carouselTitleRow}>
+            {icon}
+            <Text style={styles.carouselTitle} numberOfLines={1}>{label}</Text>
+            <View style={styles.countPill}>
+              <Text style={styles.countPillText}>{data.length}</Text>
+            </View>
           </View>
-        </View>
-        <SeeAll label="Ver todo" />
-      </TouchableOpacity>
+          <SeeAll label="Ver todo" />
+        </TouchableOpacity>
+      </TourTarget>
       <FlatList
         horizontal
         data={data}
         keyExtractor={item => `${key}_${item.id}`}
-        renderItem={({ item }) => renderCard(item, carouselCardWidth, inCollection)}
+        renderItem={({ item, index }) =>
+          tourTargets && index === 0 ? (
+            <TourTarget id="home.card">{renderCard(item, carouselCardWidth, inCollection)}</TourTarget>
+          ) : (
+            renderCard(item, carouselCardWidth, inCollection)
+          )
+        }
         extraData={[selectionMode, selectedIds, progress]}
         ItemSeparatorComponent={() => <View style={{ width: GRID_GAP }} />}
         showsHorizontalScrollIndicator={false}
@@ -377,7 +449,7 @@ export default function DashboardScreen({ navigation }: Props) {
               : 'Sin comenzar';
     const coverWidth = isTablet ? 190 : 118;
     return (
-      <View>
+      <TourTarget id="home.hero">
         <View style={styles.heroHeader}>
           <Text style={styles.heroHeaderTitle}>Continuar leyendo</Text>
           <TouchableOpacity onPress={() => setSection('recent')} accessibilityLabel="Ver libros recientes">
@@ -425,7 +497,7 @@ export default function DashboardScreen({ navigation }: Props) {
           </View>
         </View>
       </View>
-      </View>
+      </TourTarget>
     );
   };
 
@@ -483,25 +555,33 @@ export default function DashboardScreen({ navigation }: Props) {
             </View>
           )}
           <View style={styles.headerActions}>
-            <TouchableOpacity style={styles.circleBtn} onPress={toggleSearch} accessibilityLabel={searchOpen ? 'Cerrar búsqueda' : 'Buscar'}>
-              {searchOpen ? <CloseIcon size={16} color={COLORS.text} /> : <SearchIcon size={18} color={COLORS.text} />}
-            </TouchableOpacity>
+            <TourTarget id="header.search">
+              <TouchableOpacity style={styles.circleBtn} onPress={toggleSearch} accessibilityLabel={searchOpen ? 'Cerrar búsqueda' : 'Buscar'}>
+                {searchOpen ? <CloseIcon size={16} color={COLORS.text} /> : <SearchIcon size={18} color={COLORS.text} />}
+              </TouchableOpacity>
+            </TourTarget>
             {!searchOpen && (
               <>
-                <TouchableOpacity style={styles.circleBtn} onPress={() => navigation.navigate('Stats')} accessibilityLabel="Mi lectura">
-                  <ChartIcon size={18} color={COLORS.text} />
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.circleBtn} onPress={() => setFoldersModalVisible(true)} accessibilityLabel="Carpetas">
-                  <FolderIcon size={17} color={COLORS.text} />
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.circleBtn, styles.circleBtnPrimary, (isScanning || !scannedFolders.some(f => f.enabled)) && { opacity: 0.5 }]}
-                  onPress={() => actions.refreshLibrary()}
-                  disabled={isScanning || !scannedFolders.some(f => f.enabled)}
-                  accessibilityLabel="Actualizar biblioteca"
-                >
-                  {isScanning ? <ActivityIndicator size="small" color="#0A0A0A" /> : <RefreshIcon size={17} color="#0A0A0A" />}
-                </TouchableOpacity>
+                <TourTarget id="header.stats">
+                  <TouchableOpacity style={styles.circleBtn} onPress={() => navigation.navigate('Stats')} accessibilityLabel="Mi lectura">
+                    <ChartIcon size={18} color={COLORS.text} />
+                  </TouchableOpacity>
+                </TourTarget>
+                <TourTarget id="header.folders">
+                  <TouchableOpacity style={styles.circleBtn} onPress={() => setFoldersModalVisible(true)} accessibilityLabel="Carpetas">
+                    <FolderIcon size={17} color={COLORS.text} />
+                  </TouchableOpacity>
+                </TourTarget>
+                <TourTarget id="header.refresh">
+                  <TouchableOpacity
+                    style={[styles.circleBtn, styles.circleBtnPrimary, (isScanning || !scannedFolders.some(f => f.enabled)) && { opacity: 0.5 }]}
+                    onPress={() => actions.refreshLibrary()}
+                    disabled={isScanning || !scannedFolders.some(f => f.enabled)}
+                    accessibilityLabel="Actualizar biblioteca"
+                  >
+                    {isScanning ? <ActivityIndicator size="small" color="#0A0A0A" /> : <RefreshIcon size={17} color="#0A0A0A" />}
+                  </TouchableOpacity>
+                </TourTarget>
               </>
             )}
           </View>
@@ -517,10 +597,14 @@ export default function DashboardScreen({ navigation }: Props) {
 
       {/* Body */}
       {section === null && !isSearching ? (
-        <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + 40 }} showsVerticalScrollIndicator={false}>
+        <ScrollView
+          ref={homeScrollRef}
+          onScroll={e => (homeScrollY.current = e.nativeEvent.contentOffset.y)}
+          scrollEventThrottle={32}
+          contentContainerStyle={{ paddingBottom: insets.bottom + 40 }} showsVerticalScrollIndicator={false}>
           {renderHero()}
-          {favoriteBooks.length > 0 && renderCarousel('favorites', 'Favoritos', favoriteBooks, false, <StarIcon size={19} color={COLORS.sakura} filled />)}
-          {collections.map(c => renderCarousel(c.name, c.name, c.books, c.name !== UNSORTED))}
+          {favoriteBooks.length > 0 && renderCarousel('favorites', 'Favoritos', favoriteBooks, false, <StarIcon size={19} color={COLORS.wisteria} filled />)}
+          {collections.map((c, i) => renderCarousel(c.name, c.name, c.books, c.name !== UNSORTED, undefined, i === 0))}
 
           {activeBooks.length === 0 && (
             <View style={styles.empty}>

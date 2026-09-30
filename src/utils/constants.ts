@@ -17,6 +17,8 @@ export const COLORS = {
   surface: '#161616',
   border: '#2A2A2A',
   overlay: 'rgba(0, 0, 0, 0.7)',
-  seal: '#C8412E',   // shu-iro (vermilion) of a hanko stamp: "finished" marks
-  sakura: '#F4A7B9', // favorites
+  // The only two accents, both taken from the logo (gold ensō on black → murasaki violet).
+  gold: '#E2B84E',     // kin-iro: "finished" hanko, bookmarks, tutorial highlights
+  wisteria: '#A98BD0', // fuji-iro, the light side of the logo's murasaki: favorites
+  inkViolet: '#241040', // deep murasaki ink, for text drawn on gold
 };
