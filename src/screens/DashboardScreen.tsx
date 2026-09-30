@@ -34,8 +34,8 @@ import BookCard from '../components/library/BookCard';
 import ReorderGrid from '../components/library/ReorderGrid';
 import TourTarget from '../components/tour/TourTarget';
 import { measureTarget, Tour, useTour } from '../components/tour/tour';
-import { TOUR_STEPS } from '../components/tour/steps';
-import { isTourSeen } from '../services/storageService';
+import { TOUR_STEPS, TourRun } from '../components/tour/steps';
+import { getTourProgress, TourProgress } from '../services/storageService';
 import {
   ArrowIcon,
   BackIcon,
@@ -188,22 +188,37 @@ export default function DashboardScreen({ navigation }: Props) {
     setOptionsVisible(false);
   }, []);
 
-  // Guided tour: auto-starts once, the first time the library shows books on the home screen.
+  // Guided tour, started by itself on the home screen: with an empty library only the intro (header
+  // and "Agregar carpeta"); the library part as soon as the first books appear; both at once if
+  // the app already has books the first time.
   const tour = useTour();
-  const [tourSeen, setTourSeen] = useState<boolean | null>(null);
+  const [tourProgress, setTourProgress] = useState<TourProgress | null>(null);
   const homeScrollRef = useRef<ScrollView>(null);
   useEffect(() => {
-    isTourSeen().then(setTourSeen).catch(() => setTourSeen(true));
+    getTourProgress()
+      .then(setTourProgress)
+      .catch(() => setTourProgress({ intro: true, library: true }));
   }, []);
   useEffect(() => {
-    if (tourSeen !== false || isScanning || foldersModalVisible || section !== null || selectionMode) return;
-    if (activeBooks.length === 0) return;
+    if (!tourProgress || tour.active || isScanning || foldersModalVisible || section !== null || selectionMode) return;
+    const hasBooks = activeBooks.length > 0;
+    const run: TourRun | null = hasBooks
+      ? tourProgress.library
+        ? null
+        : tourProgress.intro
+          ? 'library'
+          : 'full'
+      : books.length === 0 && !tourProgress.intro
+        ? 'intro'
+        : null;
+    if (!run) return;
     const timer = setTimeout(() => {
-      setTourSeen(true);
-      Tour.start();
+      // Once per session per part; finishing or skipping stores it (tour.ts).
+      setTourProgress(p => p && { intro: true, library: p.library || run !== 'intro' });
+      Tour.start(run);
     }, 900);
     return () => clearTimeout(timer);
-  }, [activeBooks.length, foldersModalVisible, isScanning, section, selectionMode, tourSeen]);
+  }, [activeBooks.length, books.length, foldersModalVisible, isScanning, section, selectionMode, tour.active, tourProgress]);
   // Whenever the tour runs (also replayed from "Mi lectura"), show the plain home screen.
   useEffect(() => {
     if (!tour.active) return;
@@ -615,10 +630,12 @@ export default function DashboardScreen({ navigation }: Props) {
                   ? 'Elige la carpeta donde guardas tus mangas, cómics y libros (CBR, CBZ, PDF o EPUB). InkTrick los encuentra solo, incluso en subcarpetas.'
                   : 'Activa al menos una carpeta en el gestor de carpetas para ver tus libros.'}
               </Text>
-              <TouchableOpacity style={[styles.primaryBtn, { marginTop: 8 }]} onPress={() => setFoldersModalVisible(true)}>
-                <FolderIcon size={16} color="#0A0A0A" />
-                <Text style={styles.primaryBtnText}>{books.length === 0 ? 'Agregar carpeta' : 'Gestionar carpetas'}</Text>
-              </TouchableOpacity>
+              <TourTarget id="home.addFolder" style={{ marginTop: 8 }}>
+                <TouchableOpacity style={styles.primaryBtn} onPress={() => setFoldersModalVisible(true)}>
+                  <FolderIcon size={16} color="#0A0A0A" />
+                  <Text style={styles.primaryBtnText}>{books.length === 0 ? 'Agregar carpeta' : 'Gestionar carpetas'}</Text>
+                </TouchableOpacity>
+              </TourTarget>
             </View>
           )}
         </ScrollView>

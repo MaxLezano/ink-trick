@@ -31,7 +31,8 @@ interface StorageData {
   stats?: ReadingStats;
   bookmarks?: Record<string, Bookmark[]>;
   autoBackup?: AutoBackupConfig;
-  tourSeenAt?: number; // Guided tour finished or skipped: it no longer starts by itself
+  tourSeenAt?: number; // Legacy (v1.3.2): the whole guided tour was seen
+  tourParts?: { intro?: number; library?: number }; // Tour parts finished or skipped
 }
 
 export type StorageSnapshot = StorageData;
@@ -397,15 +398,23 @@ export async function saveAutoBackup(config: AutoBackupConfig | null): Promise<v
 
 // ─── Guided tour ───────────────────────────────────────────────────────────
 
-export async function isTourSeen(): Promise<boolean> {
-  const data = await readData();
-  return !!data.tourSeenAt;
+export interface TourProgress {
+  intro: boolean;
+  library: boolean;
 }
 
-export async function markTourSeen(): Promise<void> {
+export async function getTourProgress(): Promise<TourProgress> {
   const data = await readData();
-  if (data.tourSeenAt) return;
-  data.tourSeenAt = Date.now();
+  const legacy = !!data.tourSeenAt;
+  return { intro: legacy || !!data.tourParts?.intro, library: legacy || !!data.tourParts?.library };
+}
+
+export async function markTourParts(parts: ('intro' | 'library')[]): Promise<void> {
+  if (parts.length === 0) return;
+  const data = await readData();
+  const next = { ...data.tourParts };
+  parts.forEach(part => (next[part] = next[part] ?? Date.now()));
+  data.tourParts = next;
   await writeData(data);
 }
 

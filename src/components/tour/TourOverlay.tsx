@@ -103,7 +103,7 @@ function TapZonesDiagram() {
 }
 
 export default function TourOverlay() {
-  const { active, order, index } = useTour();
+  const { active, run, order, index } = useTour();
   const insets = useSafeAreaInsets();
   const rootRef = useRef<View>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -250,7 +250,7 @@ export default function TourOverlay() {
             </TouchableOpacity>
           )}
           <TouchableOpacity style={styles.primaryBtn} onPress={Tour.next}>
-            <Text style={styles.primaryBtnText}>{isFirst ? 'Empezar' : isLast ? '¡A leer!' : 'Siguiente'}</Text>
+            <Text style={styles.primaryBtnText}>{isFirst ? 'Empezar' : isLast ? (run === 'intro' ? 'Entendido' : '¡A leer!') : 'Siguiente'}</Text>
             {!isLast && <ArrowIcon size={15} color="#0A0A0A" />}
           </TouchableOpacity>
         </View>
