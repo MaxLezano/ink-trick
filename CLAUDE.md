@@ -1,0 +1,189 @@
+# InkTrick — Claude working notes
+
+Offline manga / manhwa / comic / PDF reader for Android tablets, headed for Google Play.
+React Native 0.81 + Expo SDK 54 (bare workflow, custom native module), TypeScript, Zustand.
+This file is the **only** project doc: keep it in sync whenever behavior changes.
+
+## Rules
+
+- UI copy is **Spanish** using `tú` ("¿Quieres…?", "Elige…"), never `vos`, matching existing strings.
+  Code, identifiers, comments, commit messages and docs are **English**.
+- Conventional commits only. Never add AI attribution / `Co-Authored-By` lines.
+- Commit or push only when asked. Never delete files, uninstall packages or wipe data without
+  explicit approval (the user may run the destructive step themselves).
+- Verify claims against code or a device before stating them. Test on the emulator (and the
+  tablet when connected) after changes that touch reading, gestures, storage or native code.
+- `/android` is **versioned** and contains hand-written native code. Never run
+  `expo prebuild --clean` (it would wipe it); `android/.gitignore` excludes build output.
+- Quality must adapt to each screen (HD 800×1280 tablet, 2K tablet): decode images at the device's
+  physical size, never hardcode pixel sizes (use `PixelRatio`).
+- Never use text glyphs (→ ★ ▶ ✓) as icons; use `src/components/Icons.tsx`.
+- No permissions, no network: do not add dependencies that need them (see Release).
+
+## Product behavior
+
+**Principles**: dark minimalist look (black / grays / white, vermilion `COLORS.seal` and sakura pink
+`COLORS.sakura` as the only accents, Japanese ink-brush icon motifs); the page owns the screen;
+100% offline and local, no telemetry or accounts.
+
+**Library (Dashboard)**
+- Folders are picked with SAF and scanned recursively for `.pdf/.cbr/.cbz` (+ `cover.jpg` next to
+  files). Rescans on launch (silent) and with the refresh button (spinner + banner).
+- Home: header icons (search, "Mi lectura", folders, refresh) · "Continuar leyendo" hero (opens ONLY
+  from its "Continuar" button) with a "Recientes →" link · Favoritos carousel · one carousel per
+  collection. No greeting, week strip or "in progress" carousel (user removed them).
+- Collection grid → "Ordenar": long-press drag or arrows, spring-animated (`ReorderGrid`); saved
+  as `BookFile.order`, used by carousels and "Siguiente tomo". "Por nombre" resets to natural order.
+- Long press a card → selection mode → ⋮ menu: add/remove favorites (label reflects state), mark
+  read / unread, change cover (page number), move to collection (dismissable), remove from library
+  (files stay on disk and are skipped by future scans).
+- Finished books show a vermilion hanko-style "LEÍDO" seal; favorites a filled sakura.
+
+**Reader**
+- Tap zones (`src/components/reader/tapZones.ts`, shared by comic + PDF): the top band (~9.5% of
+  the height) opens the controls; narrow edge strips (17% width, 12–90% height) turn pages
+  (mirrored in RTL); everything else does nothing. Controls close ONLY with their ✕ button.
+- Controls: top bar (back, title, settings, ✕) + bottom page scrubber (reversed in RTL).
+- Settings: centered dialog, per book. Presets Manga (paged RTL) / Manhwa (vertical continuous) /
+  Cómic (paged LTR) / Libro (paged, never double page); the active one is highlighted by color only.
+  Options: scroll direction, paging, reading direction, fit (width / height / full), double page
+  (off / auto in landscape / on; cover and wide pages stay single), auto crop, double-tap zoom,
+  tap-to-turn, dimmer (0–60%), fullscreen (hides the nav bar), keep awake.
+- New books inherit the last settings of the same series (collection name, else parent folder).
+- Pinch zoom up to 5x with focal point, pan with inertia, double tap zooms at the tapped point.
+- Last page → "Terminaste este tomo" card with a "Siguiente" button (next book of the series).
+- Double page and auto crop are comic-only (Pdfium cannot do them).
+
+**Mi lectura (Stats)**: today / week / streak / finished tiles, 14-day minutes chart, most-read
+books, backup export (JSON to a picked folder) and import (merge; books matched by path, then name
++ size). Reading time accumulates between page turns (gaps > 5 min ignored); only 1–2 page steps
+count as read pages (scrubber jumps do not).
+
+**Splash**: `src/components/SplashScreen.tsx` over the navigator: "InkTrick", インクトリック and an
+animated bar, at least 1.4 s, then fades. The native window background is `#0A0A0A` (no logo).
+
+## Commands
+
+```bash
+npx tsc --noEmit                               # typecheck (must be clean)
+cd android && ./gradlew assembleRelease        # APK -> android/app/build/outputs/apk/release/inkTrick.apk
+cd android && ./gradlew bundleRelease          # AAB -> android/app/build/outputs/bundle/release/app-release.aab
+adb -s emulator-5554 install -r android/app/build/outputs/apk/release/inkTrick.apk
+adb -s emulator-5554 shell am start -n com.lezma.InkTrick/.MainActivity
+npx expo install <pkg>                         # always (keeps SDK 54 versions aligned)
+```
+
+- Release build ≈ 10 min cold (needs `-Xmx4096m -XX:MaxMetaspaceSize=1536m`, set in
+  `android/gradle.properties`, or lint dies with Metaspace OOM), ≈ 1–2 min when only JS changed.
+- Versions live in **two** places: `app.json` (`version`, `android.versionCode`) and
+  `android/app/build.gradle` (`versionName`, `versionCode`). Bump both; Play needs a new
+  `versionCode` for every upload.
+
+## Release (Google Play)
+
+- Upload an **AAB** (`bundleRelease`), not the APK. Package: `com.lezma.InkTrick`.
+- Signing: `android/app/build.gradle` reads `android/keystore.properties` (`storeFile` relative to
+  `android/`, `storePassword`, `keyAlias`, `keyPassword`). Both it and `*.keystore` are gitignored
+  (except `android/app/debug.keystore`). Without it, release falls back to the debug key.
+- Switching a device from a debug-signed build to an upload-key build requires uninstalling
+  (Android refuses a different signature) → export a backup from "Mi lectura" first.
+- Permissions: the main manifest strips everything libraries merge in (`tools:node="remove"`);
+  the merged release manifest must only contain `WAKE_LOCK` and the app's own
+  `DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`. Debug manifests re-add `INTERNET` and
+  `SYSTEM_ALERT_WINDOW` for Metro. `app.json` mirrors this in `android.blockedPermissions`.
+- Minify/R8 is off. Before enabling it, add keep rules for JNI libs
+  (`me.zhanghai.android.libarchive`, pdfium) and test every reader path.
+
+## Architecture
+
+```
+App.tsx                      clears reading cache, loads library, splash overlay
+src/navigation/AppNavigator  Stack: Dashboard -> Reader { bookId } / Stats
+src/screens/DashboardScreen  home, grids, search, selection/batch actions, reorder, folder manager
+src/screens/ReaderScreen     loading, progress, stats tracking, controls, next volume
+src/screens/StatsScreen      "Mi lectura": stats + chart, backup export/import
+src/components/
+  Icons.tsx                  SVG brush icons (react-native-svg): ensō, sakura, bamboo, makimono, Fuji
+  SplashScreen.tsx           launch screen
+  library/BookCard.tsx       memoized cover card (expo-image), LEÍDO seal, progress, favorite
+  library/ReorderGrid.tsx    sortable grid (RNGH pan after long press + Reanimated springs)
+  reader/ComicReader.tsx     CBR/CBZ: 1–2 page "slots" (spreads), paged H (LTR/RTL), paged V, webtoon
+                             strip; exact getItemLayout; auto-crop boxes; full-res decode while zoomed
+  reader/ZoomableView.tsx    pinch / pan with decay / double tap / single tap
+  reader/PageScrubber.tsx    draggable page slider
+  reader/ReaderSettingsSheet.tsx  settings dialog + presets
+  reader/tapZones.ts         shared tap zone geometry
+src/store/libraryStore.ts    Zustand store + pure selectors (selectActiveBooks, selectRecent, ...)
+src/services/
+  bookCacheService.ts        ONLY bridge to ComicArchiveModule: pages, PDF copies, covers, cache
+  storageService.ts          JSON persistence (atomic write), progress, settings, exclusions, stats
+  backupService.ts           export/import JSON backup via SAF
+  fileScanner.ts             recursive SAF scan (yields to the UI between folders)
+src/utils/format.ts          natural sort, sortSeries, short titles, seriesKeyOf, bytes, durations
+android/app/src/main/java/com/lezma/InkTrick/ComicArchiveModule.kt   native module (libarchive)
+patches/react-native-pdf+7.0.4.patch   PdfView.java: ARGB_8888 tiles, fitEachPage, RTL page fix
+```
+
+Native module methods: `extractAllImages`, `getCachedPages`, `computeTrimBoxes` (auto crop,
+cached in `trim.json`), `extractCover` / `createThumbnail` / `renderPdfCover` (covers, margins
+cropped), `getPdfPageCount`, `copyToLocalFile`.
+
+### Rendering pipeline
+
+- **Books are never kept decompressed** (user decision): temporary files exist only while a book
+  is open. `ReaderScreen` calls `releaseBookFiles(bookId)` on unmount (after any extraction in
+  progress settles) and `App.tsx` runs `clearReadingCache()` on every launch. Only covers,
+  progress, settings and stats persist. Reopening a book re-extracts it (a few seconds).
+- **PDF**: `react-native-pdf` (Pdfium, vector, tile rendering). SAF files are copied atomically
+  to `cache/inktrick_pdf/<id>.pdf` while open. Page count is fetched natively **before** mounting.
+- **CBR/CBZ**: native extraction to `cache/inktrick_comics_v2/<id>/page_NNNN.ext`, sorted by the
+  original archive path (natural order). `manifest.json` (version 2, each page's w/h) is the
+  completion marker — a folder without it is a partial extraction and gets rebuilt.
+- Images render with `expo-image`, `cachePolicy="memory"` (no disk cache of local files).
+- Covers: JPEG thumbnails sized to the screen density (~240dp), margins cropped, in
+  `files/inktrick/covers/<id>_c2_p<page>.jpg` (persistent). Bump `COVER_VERSION` to regenerate all.
+- While a comic page is zoomed it is re-decoded at full source resolution (`allowDownscaling`).
+
+### Data model / persistence
+
+- `files/inktrick/data.json`: library, progress, bookSettings, seriesSettings, scannedFolders,
+  excludedPaths, stats (days / books / finished). Writes are serialized through `data.json.tmp` → move.
+- Book identity = `filePath`; rescans merge by path, falling back to `fileName + fileSize`.
+- Progress: `currentPage` is the 0-based logical page; `percentage` 0–100. A finished book reopens
+  at page 1. Progress is flushed on `beforeRemove` and when the app goes to background.
+
+## Gotchas learned the hard way
+
+- `expo-file-system` `File.move()` **mutates the instance uri**; create fresh `File` instances.
+- `useMemo` / effects must depend on **state**, not refs (a memo reading a ref computed the PDF
+  start page before the page count existed and never recomputed).
+- react-native-pdf RTL: pages are reversed natively; `page` and `onPageChanged` use the
+  *displayed* index. Logical = `total - displayed`. The library's `if (page != 1) page = pageCount`
+  override was removed in the patch (it broke reopening).
+- Animated page turns: ignore scroll events until the target page lands, or the indicator flickers
+  back to the old page (`pendingDisplayRef` in `ComicReader`).
+- Folder scans are synchronous SAF listing: they must yield (`yieldToUI`) or loaders never paint.
+- Buttons floating over the page must be gesture-handler touchables, or page gestures swallow taps.
+- libarchive reads SAF files via `readOpenFd` on a `ParcelFileDescriptor` (no temp copy).
+- `patch-package` fails on Windows (git CRLF warnings): edit the `.patch` by hand (fix hunk
+  headers) and verify with `npx patch-package --reverse && npx patch-package`. Patches must contain
+  only real source hunks.
+- VS Code's Java extension imported the Gradle plugins inside `node_modules` ("non existing library
+  junit/truth/gradle-test-kit" errors, junk `.classpath/.project/.settings`). It is disabled in
+  `.vscode/settings.json` (`java.import.gradle.enabled: false`); errors were IDE-only.
+- Git Bash here lacks `rg`/`sd`/`fd`; use the Grep/Glob tools, or `grep`/`python` in scripts.
+  Bash heredocs choke on some quoting: write Python edit scripts to a file first.
+
+## Devices
+
+- Physical tablet: `Tab_C10Pro` (Allwinner A523, 4 GB RAM, Android 13, 800×1280 @ 160 dpi), adb id
+  `C10P91468240029`. If it shows `offline`, accept the USB debugging prompt on the tablet.
+  Its library lives in `/sdcard/Libros/Anime` (PDF + CBR). The user also reads on a 2K tablet.
+- Emulator: AVD `Pixel_Tablet` (`emulator-5554`, 1600×2560). Test data in `/sdcard/Manga`
+  (JJK `.cbr` volumes, Solo Leveling webtoon `.pdf` arcs).
+- Screenshots shown to the model are scaled: multiply displayed coordinates by 1.28 for
+  `adb shell input tap`. On the emulator, taps at y < ~60 px open the system caption bar; use
+  y ≈ 130 for the reader's top band.
+- Smoke test: splash → home → open CBR (restores exact page) → top band (controls) → scrubber jump →
+  preset Manga (keeps page, reversed scrubber) → edge tap turns page → double tap zoom + pan →
+  ✕ → back → reopen (same page). Repeat with a PDF in RTL. Reorder a collection by drag.
