@@ -111,7 +111,7 @@ npx expo install <pkg>                         # always (keeps SDK 54 versions a
   (except `android/app/debug.keystore`). Without it, release falls back to the debug key.
 - Upload key: `D:\TRABAJO\Claves\InkTrick\inktrick-upload.jks` (alias `inktrick-upload`, RSA 4096,
   created 2026-09-30); `keystore.properties` points to it as `../../Claves/InkTrick/...`. The
-  user keeps the file + password backed up. Upload cert SHA-256 starts `CD:0F:62:B2`.
+  user keeps the file + password backed up. Upload cert (CN=Max Lezano, O=LezMa, C=AR) SHA-256 starts `7E:F5:6E:56`.
 - Switching a device from a debug-signed build to an upload-key build requires uninstalling
   (Android refuses a different signature) → export a backup from "Mi lectura" first.
 - Permissions: the main manifest strips everything libraries merge in (`tools:node="remove"`);
