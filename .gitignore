@@ -10,6 +10,10 @@ web-build/
 expo-env.d.ts
 
 # Native
+android/keystore.properties
+*.keystore
+!android/app/debug.keystore
+*.aab
 .kotlin/
 *.orig.*
 *.jks
@@ -37,8 +41,8 @@ yarn-error.*
 *.tsbuildinfo
 
 # generated native folders
+# /android is hand-maintained (custom native module); its own .gitignore excludes build output.
 /ios
-/android
 
 # IDE and Editor configurations
 .vscode/
