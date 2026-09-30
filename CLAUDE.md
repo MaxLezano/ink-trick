@@ -37,18 +37,22 @@ This file is the **only** project doc: keep it in sync whenever behavior changes
   from its "Continuar" button) with a "Recientes →" link · Favoritos carousel · one carousel per
   collection. No greeting, week strip or "in progress" carousel (user removed them).
 - Collection grid → "Ordenar": long-press drag or arrows, spring-animated (`ReorderGrid`; holding a
-  dragged card near the top / bottom edge auto-scrolls, user scrolling is locked meanwhile); saved
+  dragged card near the top / bottom edge auto-scrolls; while dragging, the drag owns the scroll
+  offset on the UI thread: `scrollEnabled` via animated props and any other drift is undone each frame); saved
   as `BookFile.order`, used by carousels and "Siguiente tomo". "Por nombre" resets to natural order.
 - Long press a card → selection mode → ⋮ menu: add/remove favorites (label reflects state), mark
   read / unread, change cover (page number), move to collection (dismissable), remove from library
   (files stay on disk and are skipped by future scans).
 - Finished books show a gold hanko-style "LEÍDO" seal; favorites a filled wisteria-colored sakura.
 - Guided tour (`src/components/tour/`, ported from the user's GymBro app): dims the screen and
-  spotlights one element at a time (gold ring) with a bubble (Atrás / Siguiente / Saltar). Stops: welcome,
-  folders, refresh, search, Mi lectura, hero, first collection header, its first card, reader tap
-  zones (diagram built from `tapZones.ts`), done. Stops whose target is not mounted (no hero yet) are
-  left out when leaving the welcome step. Auto-starts once, the first time the home screen shows
-  books; finishing or skipping sets `tourSeenAt` in data.json. Replay: "Mi lectura" → "Ver tutorial".
+  spotlights one element at a time (gold ring) with a bubble (Atrás / Siguiente / Saltar). Two parts
+  (`steps.ts`): **intro** = welcome + header buttons (folders, refresh, search, Mi lectura) and, in
+  an empty library, "Agregar carpeta"; **library** = hero, first collection header, its first card,
+  reader tap zones (diagram from `tapZones.ts`), done. Runs: `intro` auto-starts on a brand new empty
+  library, `library` auto-starts when the first books appear, `full` when the first launch already
+  has books and for the replay ("Mi lectura" → "Ver tutorial"). Stops whose target is not mounted
+  are left out when leaving the welcome step. Seen parts are stored in `tourParts` (data.json;
+  legacy `tourSeenAt` = both); a replay with no books never marks the library part.
 
 **Reader**
 - Tap zones (`src/components/reader/tapZones.ts`, shared by comic + PDF): the top band (~9.5% of
@@ -159,6 +163,7 @@ src/components/
   reader/ZoomableView.tsx    pinch / pan with decay / double tap / single tap
   reader/PageScrubber.tsx    draggable page slider
   reader/ReaderSettingsSheet.tsx  settings dialog + presets
+  reader/BambooLoader.tsx    loading animation (bamboo cut by progress)
   reader/tapZones.ts         shared tap zone geometry
   tour/                      guided tour: tour.ts (store), TourTarget, steps.ts, TourOverlay (App.tsx)
 src/store/libraryStore.ts    Zustand store + pure selectors (selectActiveBooks, selectRecent, ...)
@@ -186,6 +191,10 @@ margins cropped), `getPdfPageCount`, `copyToLocalFile`, `readBookInfo` (ComicInf
   progress, settings and stats persist. Reopening a book re-extracts it (a few seconds).
 - **PDF**: `react-native-pdf` (Pdfium, vector, tile rendering). SAF files are copied atomically
   to `cache/inktrick_pdf/<id>.pdf` while open. Page count is fetched natively **before** mounting.
+- Loading screen: `BambooLoader` (reader/), a row of bamboo stalks cut by a gold stroke. Comics
+  report real progress: 0–90% = compressed bytes read (fd offset via `Os.lseek`, or a counting
+  stream in the zip fallback), 90–99% = pages renamed + measured, 100 = manifest written; each
+  stalk is an equal share. PDF / EPUB (no progress) loop.
 - **CBR/CBZ**: native extraction to `cache/inktrick_comics_v2/<id>/page_NNNN.ext`, sorted by the
   original archive path (natural order). `manifest.json` (version 3, each page's w/h and archive
   folder = chapter) is the completion marker — a folder without it is a partial extraction and gets rebuilt.
@@ -197,7 +206,7 @@ margins cropped), `getPdfPageCount`, `copyToLocalFile`, `readBookInfo` (ComicInf
 ### Data model / persistence
 
 - `files/inktrick/data.json`: library, progress, bookSettings, seriesSettings, scannedFolders,
-  excludedPaths, stats (days / books / finished), bookmarks, autoBackup, tourSeenAt. Writes are serialized through `data.json.tmp` → move.
+  excludedPaths, stats (days / books / finished), bookmarks, autoBackup, tourParts. Writes are serialized through `data.json.tmp` → move.
 - Book identity = `filePath`; rescans merge by path, falling back to `fileName + fileSize`.
 - Progress: `currentPage` is the 0-based logical page; `percentage` 0–100. A finished book reopens
   at page 1. Progress is flushed on `beforeRemove` and when the app goes to background.

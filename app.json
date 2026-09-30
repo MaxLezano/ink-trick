@@ -2,7 +2,7 @@
   "expo": {
     "name": "InkTrick",
     "slug": "InkTrick",
-    "version": "1.3.2",
+    "version": "1.3.3",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -10,7 +10,7 @@
       "supportsTablet": true
     },
     "android": {
-      "versionCode": 8,
+      "versionCode": 9,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundImage": "./assets/adaptive-background.png",
