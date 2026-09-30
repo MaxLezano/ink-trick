@@ -109,6 +109,9 @@ npx expo install <pkg>                         # always (keeps SDK 54 versions a
 - Signing: `android/app/build.gradle` reads `android/keystore.properties` (`storeFile` relative to
   `android/`, `storePassword`, `keyAlias`, `keyPassword`). Both it and `*.keystore` are gitignored
   (except `android/app/debug.keystore`). Without it, release falls back to the debug key.
+- Upload key: `D:\TRABAJO\Claves\InkTrick\inktrick-upload.jks` (alias `inktrick-upload`, RSA 4096,
+  created 2026-09-30); `keystore.properties` points to it as `../../Claves/InkTrick/...`. The
+  user keeps the file + password backed up. Upload cert SHA-256 starts `CD:0F:62:B2`.
 - Switching a device from a debug-signed build to an upload-key build requires uninstalling
   (Android refuses a different signature) → export a backup from "Mi lectura" first.
 - Permissions: the main manifest strips everything libraries merge in (`tools:node="remove"`);
