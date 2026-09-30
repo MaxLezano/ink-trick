@@ -36,7 +36,8 @@ This file is the **only** project doc: keep it in sync whenever behavior changes
 - Home: header icons (search, "Mi lectura", folders, refresh) · "Continuar leyendo" hero (opens ONLY
   from its "Continuar" button) with a "Recientes →" link · Favoritos carousel · one carousel per
   collection. No greeting, week strip or "in progress" carousel (user removed them).
-- Collection grid → "Ordenar": long-press drag or arrows, spring-animated (`ReorderGrid`); saved
+- Collection grid → "Ordenar": long-press drag or arrows, spring-animated (`ReorderGrid`; holding a
+  dragged card near the top / bottom edge auto-scrolls, user scrolling is locked meanwhile); saved
   as `BookFile.order`, used by carousels and "Siguiente tomo". "Por nombre" resets to natural order.
 - Long press a card → selection mode → ⋮ menu: add/remove favorites (label reflects state), mark
   read / unread, change cover (page number), move to collection (dismissable), remove from library

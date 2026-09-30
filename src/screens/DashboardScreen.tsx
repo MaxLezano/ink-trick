@@ -32,7 +32,6 @@ import { belongsToFolder, matchesQuery, selectActiveBooks, selectRecent, useLibr
 import { formatBytes, formatRelativeDate, shortTitles, sortBooksNatural, sortSeries } from '../utils/format';
 import BookCard from '../components/library/BookCard';
 import ReorderGrid from '../components/library/ReorderGrid';
-import { ScrollView as GHScrollView } from 'react-native-gesture-handler';
 import {
   ArrowIcon,
   BackIcon,
@@ -586,16 +585,15 @@ export default function DashboardScreen({ navigation }: Props) {
               <Text style={styles.emptyTitle}>{isSearching ? 'Sin resultados' : 'Colección vacía'}</Text>
             </View>
           ) : reorderIds ? (
-            <GHScrollView contentContainerStyle={{ padding: H_PADDING, paddingBottom: insets.bottom + 40 }}>
-              <ReorderGrid
-                books={gridBooks}
-                columns={numColumns}
-                cardWidth={gridCardWidth}
-                gap={GRID_GAP}
-                renderCard={book => renderCard(book, gridCardWidth, true)}
-                onMove={moveBook}
-              />
-            </GHScrollView>
+            <ReorderGrid
+              books={gridBooks}
+              columns={numColumns}
+              cardWidth={gridCardWidth}
+              gap={GRID_GAP}
+              renderCard={book => renderCard(book, gridCardWidth, true)}
+              onMove={moveBook}
+              contentContainerStyle={{ padding: H_PADDING, paddingBottom: insets.bottom + 40 }}
+            />
           ) : (
             <FlatList
               key={`grid_${numColumns}`}
