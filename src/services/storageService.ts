@@ -4,7 +4,7 @@
  * Usa expo-file-system para leer/escribir archivos JSON en el directorio de documentos.
  */
 import { File, Directory, Paths } from 'expo-file-system';
-import { BookFile, ReadingProgress, BookSettings } from '../utils/types';
+import { BookFile, ReadingProgress, BookSettings, ReadingStats } from '../utils/types';
 
 export interface ScannedFolder {
   uri: string;
@@ -19,15 +19,24 @@ interface StorageData {
   lastFolderUri?: string;
   scannedFolders?: ScannedFolder[];
   bookSettings?: Record<string, BookSettings>;
+  seriesSettings?: Record<string, BookSettings>; // Last settings used per collection / folder
+  excludedPaths?: string[]; // Files the user removed from the library (skipped on rescans)
+  stats?: ReadingStats;
 }
+
+export type StorageSnapshot = StorageData;
 
 const DATA_DIR = new Directory(Paths.document, 'inktrick');
 const DATA_FILE = new File(DATA_DIR, 'data.json');
+// Fresh instance each time: File.move() mutates the instance's uri.
+const tempFile = () => new File(DATA_DIR, 'data.json.tmp');
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 let cachedData: StorageData | null = null;
-let saveProgressTimer: NodeJS.Timeout | null = null;
+let saveProgressTimer: ReturnType<typeof setTimeout> | null = null;
+// Serializes disk writes so two saves never interleave on the same temp file.
+let writeQueue: Promise<void> = Promise.resolve();
 
 /**
  * Asegura que el directorio de datos exista.
@@ -51,11 +60,13 @@ async function readData(): Promise<StorageData> {
   }
   try {
     await ensureDataDir();
-    if (!DATA_FILE.exists) {
+    // A leftover temp file without the main file means a write was interrupted mid-swap.
+    const source = DATA_FILE.exists ? DATA_FILE : tempFile().exists ? tempFile() : null;
+    if (!source) {
       cachedData = getDefaultData();
       return cachedData;
     }
-    const content = await DATA_FILE.text();
+    const content = await source.text();
     cachedData = JSON.parse(content) as StorageData;
     if (!cachedData.bookSettings) {
       cachedData.bookSettings = {};
@@ -79,12 +90,21 @@ async function readData(): Promise<StorageData> {
  */
 async function writeData(data: StorageData): Promise<void> {
   cachedData = data;
-  try {
-    await ensureDataDir();
-    await DATA_FILE.write(JSON.stringify(data));
-  } catch (error) {
-    console.error('[StorageService] Error writing data:', error);
-  }
+  writeQueue = writeQueue.then(async () => {
+    try {
+      await ensureDataDir();
+      // Atomic-ish replace: a crash mid-write can never leave a truncated data.json behind.
+      const tmp = tempFile();
+      if (tmp.exists) tmp.delete();
+      tmp.write(JSON.stringify(cachedData ?? data));
+      const target = new File(DATA_DIR, 'data.json');
+      if (target.exists) target.delete();
+      tmp.move(target);
+    } catch (error) {
+      console.error('[StorageService] Error writing data:', error);
+    }
+  });
+  return writeQueue;
 }
 
 /**
@@ -169,33 +189,30 @@ export async function getAllProgress(): Promise<Record<string, ReadingProgress>>
 }
 
 /**
- * Obtiene el URI de la última carpeta escaneada.
+ * Limpia todos los datos persistidos.
  */
-export async function getLastFolderUri(): Promise<string | null> {
+export async function getExcludedPaths(): Promise<string[]> {
   const data = await readData();
-  return data.lastFolderUri ?? null;
+  return data.excludedPaths ?? [];
 }
 
-/**
- * Guarda el URI de la última carpeta escaneada.
- */
-export async function saveLastFolderUri(uri: string): Promise<void> {
+export async function saveExcludedPaths(paths: string[]): Promise<void> {
   const data = await readData();
-  data.lastFolderUri = uri;
+  data.excludedPaths = paths;
   await writeData(data);
 }
 
 /**
- * Limpia todos los datos persistidos.
+ * Removes progress and per-book settings of deleted books.
  */
-export async function clearAll(): Promise<void> {
-  try {
-    if (DATA_FILE.exists) {
-      await DATA_FILE.delete();
-    }
-  } catch (error) {
-    console.error('[StorageService] Error clearing data:', error);
+export async function forgetBooks(bookIds: string[]): Promise<void> {
+  if (bookIds.length === 0) return;
+  const data = await readData();
+  for (const id of bookIds) {
+    delete data.progress[id];
+    if (data.bookSettings) delete data.bookSettings[id];
   }
+  await writeData(data);
 }
 
 /**
@@ -248,30 +265,104 @@ export const DEFAULT_BOOK_SETTINGS: BookSettings = {
   isHorizontal: false,
   usePaging: false,
   fitMode: 0,
-  enableDoubleTapZoom: false,
+  enableDoubleTapZoom: true,
   brightnessDimmer: 0,
   isRTL: false,
+  tapToTurn: true,
+  keepAwake: true,
+  doublePage: 'auto',
+  autoCrop: false,
+  fullscreen: true,
 };
 
 /**
  * Obtiene la configuración de lectura de un libro.
  */
-export async function getBookSettings(bookId: string): Promise<BookSettings> {
+export async function getBookSettings(bookId: string, seriesKey?: string): Promise<BookSettings> {
   const data = await readData();
   if (!data.bookSettings) {
     data.bookSettings = {};
   }
-  return data.bookSettings[bookId] ?? { ...DEFAULT_BOOK_SETTINGS };
+  // New books inherit the settings last used in the same series (e.g. RTL for a whole manga).
+  const inherited = seriesKey ? data.seriesSettings?.[seriesKey] : undefined;
+  return {
+    ...DEFAULT_BOOK_SETTINGS,
+    ...(data.bookSettings[bookId] ?? inherited ?? {}),
+  };
 }
 
 /**
  * Guarda la configuración de lectura de un libro.
  */
-export async function saveBookSettings(bookId: string, settings: BookSettings): Promise<void> {
+export async function saveBookSettings(bookId: string, settings: BookSettings, seriesKey?: string): Promise<void> {
   const data = await readData();
   if (!data.bookSettings) {
     data.bookSettings = {};
   }
   data.bookSettings[bookId] = settings;
+  if (seriesKey) data.seriesSettings = { ...(data.seriesSettings ?? {}), [seriesKey]: settings };
   await writeData(data);
+}
+
+// ─── Reading statistics ────────────────────────────────────────────────────
+
+function emptyStats(): ReadingStats {
+  return { days: {}, books: {}, finished: {} };
+}
+
+export function dayKey(date: Date = new Date()): string {
+  const m = `${date.getMonth() + 1}`.padStart(2, '0');
+  const d = `${date.getDate()}`.padStart(2, '0');
+  return `${date.getFullYear()}-${m}-${d}`;
+}
+
+let statsTimer: ReturnType<typeof setTimeout> | null = null;
+
+export async function getStats(): Promise<ReadingStats> {
+  const data = await readData();
+  return data.stats ?? emptyStats();
+}
+
+/** Adds reading time / pages for today and for the book. Disk writes are batched. */
+export async function recordReading(bookId: string, seconds: number, pages: number): Promise<void> {
+  if (seconds <= 0 && pages <= 0) return;
+  const data = await readData();
+  const stats = (data.stats ??= emptyStats());
+  const key = dayKey();
+  const day = (stats.days[key] ??= { seconds: 0, pages: 0 });
+  day.seconds += Math.round(seconds);
+  day.pages += pages;
+  const book = (stats.books[bookId] ??= { seconds: 0, pages: 0 });
+  book.seconds += Math.round(seconds);
+  book.pages += pages;
+  if (statsTimer) clearTimeout(statsTimer);
+  statsTimer = setTimeout(() => {
+    statsTimer = null;
+    writeData(data);
+  }, 2000);
+}
+
+export async function markFinished(bookId: string): Promise<void> {
+  const data = await readData();
+  const stats = (data.stats ??= emptyStats());
+  if (stats.finished[bookId]) return;
+  stats.finished[bookId] = Date.now();
+  await writeData(data);
+}
+
+// ─── Backup ────────────────────────────────────────────────────────────────
+
+/** Full copy of the persisted data (used for backups). */
+export async function getSnapshot(): Promise<StorageSnapshot> {
+  if (statsTimer) {
+    clearTimeout(statsTimer);
+    statsTimer = null;
+  }
+  await flushProgress();
+  return JSON.parse(JSON.stringify(await readData()));
+}
+
+/** Replaces the persisted data (used when restoring a backup). */
+export async function replaceSnapshot(next: StorageSnapshot): Promise<void> {
+  await writeData(next);
 }

@@ -21,6 +21,15 @@ export interface BookFile {
   lastOpenedAt?: number;  // timestamp
   isFavorite: boolean;
   folder?: string;
+  pageCount?: number;     // Known total pages (filled on first open / cover generation)
+  order?: number;         // Manual reading order inside its collection (lower first)
+}
+
+// ─── Page of an image-based book (CBR/CBZ) ─────────────────────────────────
+export interface PageInfo {
+  uri: string;
+  width: number;
+  height: number;
 }
 
 // ─── Progreso de lectura ───────────────────────────────────────────────────
@@ -40,7 +49,36 @@ export interface BookSettings {
   enableDoubleTapZoom: boolean;
   brightnessDimmer: number; // 0 to 0.7 (opacity of night mode overlay)
   isRTL: boolean;
+  tapToTurn?: boolean;      // Tap left/right edges to turn pages (paged mode)
+  keepAwake?: boolean;      // Keep the screen on while reading
+  doublePage?: DoublePageMode; // Two pages side by side (horizontal paged comics)
+  autoCrop?: boolean;       // Trim uniform white/black margins (comics)
+  fullscreen?: boolean;     // Hide the Android status and navigation bars
 }
+
+export type DoublePageMode = 'off' | 'on' | 'auto'; // auto = only in landscape
+
+// ─── Content box of a page, as fractions of the image (auto crop) ──────────
+export interface TrimBox {
+  l: number;
+  t: number;
+  r: number;
+  b: number;
+}
+
+// ─── Reading statistics ────────────────────────────────────────────────────
+export interface DayStats {
+  seconds: number;
+  pages: number;
+}
+
+export interface ReadingStats {
+  days: Record<string, DayStats>;      // key: YYYY-MM-DD (local time)
+  books: Record<string, DayStats>;     // key: bookId
+  finished: Record<string, number>;    // bookId -> timestamp when the last page was reached
+}
+
+
 
 // ─── Estado de la biblioteca ───────────────────────────────────────────────
 export type LibrarySection = 'recent' | 'favorites' | 'folders';
@@ -48,5 +86,6 @@ export type LibrarySection = 'recent' | 'favorites' | 'folders';
 // ─── Navegación ────────────────────────────────────────────────────────────
 export type RootStackParamList = {
   Dashboard: undefined;
-  Reader: { bookId: string; preparedPath?: string };
+  Reader: { bookId: string };
+  Stats: undefined;
 };

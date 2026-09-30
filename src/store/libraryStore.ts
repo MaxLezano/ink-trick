@@ -1,55 +1,105 @@
 import { create } from 'zustand';
 import { Directory } from 'expo-file-system';
-import { Platform, Alert } from 'react-native';
-import PdfThumbnail from 'react-native-pdf-thumbnail';
+import { Alert } from 'react-native';
 import { BookFile, LibrarySection, ReadingProgress } from '../utils/types';
 import { scanDirectory } from '../services/fileScanner';
 import * as StorageService from '../services/storageService';
-import * as ComicService from '../services/comicService';
+import * as BookCache from '../services/bookCacheService';
 
-// Helper para generar miniatura de la página del PDF (por defecto 0)
-async function generatePdfThumbnail(filePath: string, pageIndex: number = 0): Promise<string | undefined> {
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+const normalizeUri = (uri: string) => uri.replace(/\/+$/, '');
+
+/** True if the book lives inside the scanned folder (exact prefix, "Manga" ≠ "Manga2"). */
+export function belongsToFolder(book: BookFile, folderUri: string): boolean {
+  const base = normalizeUri(folderUri);
+  return book.filePath === base || book.filePath.startsWith(`${base}/`);
+}
+
+function isInEnabledFolder(book: BookFile, folders: StorageService.ScannedFolder[]): boolean {
+  return folders.some(f => f.enabled && belongsToFolder(book, f.uri));
+}
+
+function folderNameFromUri(uri: string): string {
   try {
-    const cleanPath = Platform.OS === 'android' ? filePath.replace('file://', '') : filePath;
-    const result = await PdfThumbnail.generate(cleanPath, Math.max(0, pageIndex));
-    return result.uri;
-  } catch (e) {
-    console.warn('[LibraryStore] Failed to generate PDF thumbnail:', filePath, e);
-    return undefined;
+    const parts = decodeURIComponent(uri).split('/').filter(Boolean);
+    const last = parts[parts.length - 1] ?? 'Manga';
+    return last.replace(/^primary:/i, '').split(':').pop()!.split('/').pop() || 'Manga';
+  } catch {
+    return 'Manga';
   }
 }
 
-// Helper unificado para generar miniatura según el formato
-async function generateBookCover(book: BookFile): Promise<string | undefined> {
-  if (book.format === '.cbr' || book.format === '.cbz') {
-    return ComicService.extractCover(book.filePath, book.id);
-  } else {
-    return generatePdfThumbnail(book.filePath, book.coverPage ? book.coverPage - 1 : 0);
+/**
+ * Merges freshly scanned files with the stored library, keeping ids (progress), favorites,
+ * collections and custom covers. Books are matched by path; name + size is the fallback for
+ * files whose URI changed (e.g. the folder was re-added).
+ */
+function mergeScan(existing: BookFile[], scanned: BookFile[]): { merged: BookFile[]; added: number } {
+  const byPath = new Map(existing.map(b => [b.filePath, b]));
+  const byNameSize = new Map(existing.map(b => [`${b.fileName.toLowerCase()}|${b.fileSize}`, b]));
+  let added = 0;
+
+  const merged = scanned.map(file => {
+    const prev = byPath.get(file.filePath) ?? byNameSize.get(`${file.fileName.toLowerCase()}|${file.fileSize}`);
+    if (!prev) {
+      added++;
+      return file;
+    }
+    return {
+      ...file,
+      id: prev.id,
+      isFavorite: prev.isFavorite,
+      lastOpenedAt: prev.lastOpenedAt,
+      addedAt: prev.addedAt,
+      folder: prev.folder ?? file.folder,
+      coverUri: prev.coverUri ?? file.coverUri,
+      coverPage: prev.coverPage,
+      pageCount: prev.pageCount,
+      order: prev.order,
+    };
+  });
+  return { merged, added };
+}
+
+// The refresh currently running, so a manual refresh can wait for the silent one at launch.
+let refreshInFlight: Promise<void> | null = null;
+
+// Background cover generation (bounded concurrency, results streamed into the store).
+let coverJobRunning = false;
+
+async function generateMissingCovers(get: () => LibraryStore, set: (partial: Partial<LibraryStore>) => void) {
+  if (coverJobRunning) return;
+  coverJobRunning = true;
+  try {
+    // Missing covers, plus legacy full-resolution covers (migrated to light thumbnails).
+    const pending = get().books.filter(b => !BookCache.isCurrentCover(b.coverUri));
+    const BATCH = 2;
+    for (let i = 0; i < pending.length; i += BATCH) {
+      const chunk = pending.slice(i, i + BATCH);
+      const results = await Promise.all(chunk.map(b => BookCache.generateCover(b, b.coverPage ?? 1)));
+      const updates = new Map<string, { uri: string; pageCount?: number }>();
+      chunk.forEach((b, idx) => {
+        const r = results[idx];
+        if (r) updates.set(b.id, r);
+      });
+      if (updates.size > 0) {
+        const books = get().books.map(b => {
+          const u = updates.get(b.id);
+          return u ? { ...b, coverUri: u.uri, pageCount: u.pageCount ?? b.pageCount } : b;
+        });
+        set({ books });
+      }
+    }
+    if (pending.length > 0) await StorageService.saveLibrary(get().books);
+  } finally {
+    coverJobRunning = false;
   }
 }
 
-// Helper para procesar portadas en lotes paralelos acotados (evita saturar memoria en dispositivos lentos)
-async function generateCoversInBatches(books: BookFile[], batchSize: number = 3): Promise<void> {
-  const booksToProcess = books.filter(b => !b.coverUri);
-  for (let i = 0; i < booksToProcess.length; i += batchSize) {
-    const chunk = booksToProcess.slice(i, i + batchSize);
-    await Promise.all(
-      chunk.map(async book => {
-        try {
-          const thumbUri = await generateBookCover(book);
-          if (thumbUri) {
-            book.coverUri = thumbUri;
-          }
-        } catch (err) {
-          console.warn('[LibraryStore] Error in batch cover generation:', book.title, err);
-        }
-      })
-    );
-  }
-}
+// ─── Store ───────────────────────────────────────────────────────────────────
 
 interface LibraryStore {
-  // Estado
   books: BookFile[];
   progress: Record<string, ReadingProgress>;
   scannedFolders: StorageService.ScannedFolder[];
@@ -58,33 +108,28 @@ interface LibraryStore {
   isScanning: boolean;
   isLoaded: boolean;
 
-  // Acciones
   loadLibrary: () => Promise<void>;
   reloadProgress: () => Promise<void>;
   addFolderAndIndex: () => Promise<void>;
   toggleFolder: (uri: string) => Promise<void>;
   deleteFolder: (uri: string) => Promise<void>;
-  refreshLibrary: () => Promise<void>;
+  refreshLibrary: (silent?: boolean) => Promise<void>;
   setSearchQuery: (query: string) => void;
   setActiveSection: (section: LibrarySection) => void;
   toggleFavorite: (bookId: string) => Promise<void>;
   updateLastOpened: (bookId: string) => Promise<void>;
+  setBookPageCount: (bookId: string, pageCount: number) => void;
   updateBookCover: (bookId: string, pageNumber: number) => Promise<string | undefined>;
 
-  // Acciones en lote (Multi-selección)
   toggleFavoriteBatch: (bookIds: string[]) => Promise<void>;
   markAsReadBatch: (bookIds: string[]) => Promise<void>;
+  markAsUnreadBatch: (bookIds: string[]) => Promise<void>;
   deleteBooksBatch: (bookIds: string[]) => Promise<void>;
   assignFolderBatch: (bookIds: string[], folderName: string) => Promise<void>;
-
-  // Selectores computados
-  getFilteredBooks: () => BookFile[];
-  getRecentBooks: () => BookFile[];
-  getFavoriteBooks: () => BookFile[];
+  setReadingOrder: (orderedIds: string[] | null, collectionIds?: string[]) => Promise<void>;
 }
 
 export const useLibraryStore = create<LibraryStore>((set, get) => ({
-  // ─── Estado inicial ────────────────────────────────────────────────────
   books: [],
   progress: {},
   scannedFolders: [],
@@ -93,412 +138,314 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   isScanning: false,
   isLoaded: false,
 
-  // ─── Acciones ──────────────────────────────────────────────────────────
-
-  /**
-   * Carga la biblioteca desde el almacenamiento persistido.
-   */
   loadLibrary: async () => {
     try {
-      const books = await StorageService.getLibrary();
-      const progress = await StorageService.getAllProgress();
-      const scannedFolders = await StorageService.getScannedFolders();
-      const cleanedFolders = scannedFolders.map(f => ({
-        ...f,
-        name: f.name.replace(/^primary:/i, ''),
-      }));
+      const [books, progress, scannedFolders] = await Promise.all([
+        StorageService.getLibrary(),
+        StorageService.getAllProgress(),
+        StorageService.getScannedFolders(),
+      ]);
+      const cleanedFolders = scannedFolders.map(f => ({ ...f, name: f.name.replace(/^primary:/i, '') }));
       set({ books, progress, scannedFolders: cleanedFolders, isLoaded: true });
+      // Covers that were purged by the OS (old versions stored them in cache) are rebuilt quietly.
+      generateMissingCovers(get, set);
     } catch (error) {
       console.error('[LibraryStore] Error loading library:', error);
       set({ isLoaded: true });
     }
   },
 
-  /**
-   * Recarga el progreso de lectura desde el almacenamiento persistido.
-   */
   reloadProgress: async () => {
     try {
       const progress = await StorageService.getAllProgress();
-      set({ progress });
+      set({ progress: { ...progress } });
     } catch (error) {
       console.error('[LibraryStore] Error reloading progress:', error);
     }
   },
 
-  /**
-   * Flujo: Abre el selector de directorios nativo de Android/iOS (pickDirectoryAsync)
-   * -> El usuario selecciona una carpeta de su elección concediendo permisos en runtime
-   * -> Escanea y agrega de forma recursiva todos los PDFs de la carpeta seleccionada.
-   */
   addFolderAndIndex: async () => {
-    set({ isScanning: true });
+    // The picker returns its own Directory flavour; only uri/list() are used.
+    let directory: any = null;
     try {
-      // Abre el selector de carpetas nativo del dispositivo (SAF en Android, DocumentPicker en iOS)
-      const directory = await Directory.pickDirectoryAsync();
-      if (!directory) {
-        set({ isScanning: false });
-        return;
-      }
+      directory = await Directory.pickDirectoryAsync();
+    } catch {
+      return; // Picker cancelled.
+    }
+    if (!directory) return;
 
-      const folders = get().scannedFolders;
-      if (folders.some(f => f.uri === directory.uri)) {
-        set({ isScanning: false });
-        Alert.alert('Carpeta ya agregada', 'Esta carpeta ya se encuentra en tu lista de carpetas.');
-        return;
-      }
+    const folders = get().scannedFolders;
+    if (folders.some(f => normalizeUri(f.uri) === normalizeUri(directory.uri))) {
+      Alert.alert('Carpeta ya agregada', 'Esta carpeta ya se encuentra en tu lista de carpetas.');
+      return;
+    }
 
-      let folderName = 'Manga';
-      try {
-        const decoded = decodeURIComponent(directory.uri);
-        const parts = decoded.split('/');
-        const cleanParts = parts.filter(Boolean);
-        if (cleanParts.length > 0) {
-          folderName = cleanParts[cleanParts.length - 1];
-          // Strip Android content URI prefix like "primary:"
-          folderName = folderName.replace(/^primary:/i, '');
-        }
-      } catch (e) {
-        // Ignorar
-      }
+    const newFolder: StorageService.ScannedFolder = {
+      uri: directory.uri,
+      name: folderNameFromUri(directory.uri),
+      enabled: true,
+    };
+    const updatedFolders = [...folders, newFolder];
+    set({ scannedFolders: updatedFolders, isScanning: true });
+    await StorageService.saveScannedFolders(updatedFolders);
 
-      const newFolder: StorageService.ScannedFolder = {
-        uri: directory.uri,
-        name: folderName,
-        enabled: true,
-      };
-
-      const updatedFolders = [...folders, newFolder];
-      set({ scannedFolders: updatedFolders });
-      await StorageService.saveScannedFolders(updatedFolders);
-
-      // Escaneo recursivo orientado a objetos de la carpeta seleccionada
-      const scannedBooks = await scanDirectory(directory as any);
-      const existingBooks = get().books;
-
-      // Unir los libros recién escaneados con metadatos de libros existentes (ej: favoritos, recientes)
-      const mergedScanned = scannedBooks.map(scanned => {
-        const existing = existingBooks.find(
-          b => b.fileName.toLowerCase() === scanned.fileName.toLowerCase()
-        );
-        if (existing) {
-          return {
-            ...scanned,
-            id: existing.id, // Mantenemos el ID original si ya existía para no romper el progreso
-            isFavorite: existing.isFavorite,
-            lastOpenedAt: existing.lastOpenedAt,
-            addedAt: existing.addedAt,
-            folder: existing.folder || scanned.folder, // Conservamos la carpeta si ya tenía una asignada
-            coverUri: existing.coverUri || scanned.coverUri,
-            coverPage: existing.coverPage,
-          };
-        }
-        return scanned;
-      });
-
-      // Combinar los libros existentes con los nuevos escaneados sin duplicar por nombre de archivo (fileName)
-      const allBooks = [...existingBooks];
-      for (const book of mergedScanned) {
-        if (!allBooks.some(b => b.fileName.toLowerCase() === book.fileName.toLowerCase())) {
-          allBooks.push(book);
-        }
-      }
-
-      // Generar miniaturas en paralelo acotado (máx 3 a la vez) para no bloquear UI ni memoria
-      await generateCoversInBatches(allBooks, 3);
-
-      set({ books: allBooks, isScanning: false });
-      await StorageService.saveLibrary(allBooks);
+    try {
+      const excluded = new Set(await StorageService.getExcludedPaths());
+      const scanned = (await scanDirectory(directory)).filter(b => !excluded.has(b.filePath));
+      const existing = get().books;
+      const { merged } = mergeScan(existing, scanned);
+      const mergedPaths = new Set(merged.map(b => b.filePath));
+      const books = [...existing.filter(b => !mergedPaths.has(b.filePath)), ...merged];
+      set({ books, isScanning: false });
+      await StorageService.saveLibrary(books);
+      generateMissingCovers(get, set);
     } catch (error) {
       console.error('[LibraryStore] Error scanning folder:', error);
       set({ isScanning: false });
+      Alert.alert('Error', 'No se pudo leer la carpeta seleccionada.');
     }
   },
 
   toggleFolder: async (uri: string) => {
-    const folders = get().scannedFolders.map(f =>
-      f.uri === uri ? { ...f, enabled: !f.enabled } : f
-    );
+    const folders = get().scannedFolders.map(f => (f.uri === uri ? { ...f, enabled: !f.enabled } : f));
     set({ scannedFolders: folders });
     await StorageService.saveScannedFolders(folders);
   },
 
   deleteFolder: async (uri: string) => {
     const folders = get().scannedFolders.filter(f => f.uri !== uri);
-    // Eliminar también los libros que pertenecen a esa carpeta de la base de datos
-    const books = get().books.filter(book => !book.filePath.startsWith(uri));
-    
+    const removed = get().books.filter(b => belongsToFolder(b, uri));
+    const books = get().books.filter(b => !belongsToFolder(b, uri));
     set({ scannedFolders: folders, books });
     await StorageService.saveScannedFolders(folders);
     await StorageService.saveLibrary(books);
+    removed.forEach(b => BookCache.deleteBookCache(b.id));
   },
 
   /**
-   * Vuelve a escanear automáticamente las carpetas activas.
+   * Rescans every enabled folder: adds new files, drops files that no longer exist and keeps
+   * all per-book metadata. Folders that fail to scan (e.g. revoked permission) are left untouched.
    */
-  refreshLibrary: async () => {
+  refreshLibrary: async (silent = false) => {
     const enabledFolders = get().scannedFolders.filter(f => f.enabled);
     if (enabledFolders.length === 0) {
-      Alert.alert(
-        'Actualizar biblioteca',
-        'No tienes ninguna carpeta habilitada en el Gestor de carpetas. Habilita una primero.'
-      );
+      if (!silent) {
+        Alert.alert('Actualizar biblioteca', 'No tienes ninguna carpeta habilitada. Agrega o habilita una primero.');
+      }
       return;
     }
 
-    set({ isScanning: true });
+    // A scan is already running (e.g. the silent one at launch): show it and wait for it.
+    if (refreshInFlight) {
+      if (!silent) {
+        set({ isScanning: true });
+        await refreshInFlight;
+        set({ isScanning: false });
+        Alert.alert('Biblioteca actualizada', `${get().books.length} libros en total`);
+      }
+      return;
+    }
+    // Silent refreshes (on app start) update the library in place without blocking the UI.
+    set({ isScanning: !silent });
+    let finish: () => void = () => {};
+    refreshInFlight = new Promise<void>(resolve => (finish = resolve));
+    // Give React a frame to paint the loader before the (synchronous) folder listing starts.
+    await new Promise(resolve => setTimeout(resolve, 50));
     try {
-      console.log('[LibraryStore] Refreshing library from enabled folders');
-      const allScannedBooks: BookFile[] = [];
+      const excluded = new Set(await StorageService.getExcludedPaths());
+      const scanned: BookFile[] = [];
+      const scannedFolderUris: string[] = [];
 
       for (const folder of enabledFolders) {
         try {
-          const scanned = await scanDirectory(new Directory(folder.uri));
-          allScannedBooks.push(...scanned);
+          const dir = new Directory(folder.uri);
+          if (!dir.exists) continue;
+          scanned.push(...(await scanDirectory(dir)));
+          scannedFolderUris.push(folder.uri);
         } catch (err) {
           console.warn(`[LibraryStore] Error scanning folder: ${folder.name}`, err);
         }
       }
 
-      const existingBooks = get().books;
+      const existing = get().books;
+      const { merged, added } = mergeScan(existing, scanned.filter(b => !excluded.has(b.filePath)));
+      const mergedPaths = new Set(merged.map(b => b.filePath));
+      const kept = existing.filter(
+        b => !mergedPaths.has(b.filePath) && !scannedFolderUris.some(uri => belongsToFolder(b, uri)),
+      );
+      const removed = existing.filter(
+        b => !mergedPaths.has(b.filePath) && scannedFolderUris.some(uri => belongsToFolder(b, uri)),
+      );
+      const books = [...kept, ...merged];
 
-      // Fusionar libros manteniendo favoritos, carpetas, portada personalizada y progreso
-      const mergedScanned = allScannedBooks.map(scanned => {
-        const existing = existingBooks.find(
-          b => b.fileName.toLowerCase() === scanned.fileName.toLowerCase()
-        );
-        if (existing) {
-          return {
-            ...scanned,
-            id: existing.id,
-            isFavorite: existing.isFavorite,
-            lastOpenedAt: existing.lastOpenedAt,
-            addedAt: existing.addedAt,
-            folder: existing.folder || scanned.folder,
-            coverUri: existing.coverUri || scanned.coverUri,
-            coverPage: existing.coverPage,
-          };
-        }
-        return scanned;
-      });
+      set({ books, isScanning: false });
+      await StorageService.saveLibrary(books);
+      removed.forEach(b => BookCache.deleteBookCache(b.id));
+      generateMissingCovers(get, set);
 
-      // Añadir libros nuevos
-      const allBooks = [...existingBooks];
-      for (const book of mergedScanned) {
-        if (!allBooks.some(b => b.fileName.toLowerCase() === book.fileName.toLowerCase())) {
-          allBooks.push(book);
-        }
+      if (!silent) {
+        const parts = [`${books.length} libros en total`];
+        if (added > 0) parts.push(`${added} nuevos`);
+        if (removed.length > 0) parts.push(`${removed.length} ya no existen`);
+        Alert.alert('Biblioteca actualizada', parts.join(' · '));
       }
-
-      // Generar miniatura para libros nuevos en lotes paralelos
-      await generateCoversInBatches(allBooks, 3);
-
-      set({ books: allBooks, isScanning: false });
-      await StorageService.saveLibrary(allBooks);
-      
-      Alert.alert('Éxito', '¡Biblioteca sincronizada y actualizada!');
     } catch (error) {
       console.error('[LibraryStore] Error refreshing library:', error);
       set({ isScanning: false });
-      Alert.alert('Error', 'No se pudo sincronizar la biblioteca.');
+      if (!silent) Alert.alert('Error', 'No se pudo sincronizar la biblioteca.');
+    } finally {
+      refreshInFlight = null;
+      finish();
     }
   },
 
   setSearchQuery: (query: string) => set({ searchQuery: query }),
   setActiveSection: (section: LibrarySection) => set({ activeSection: section }),
 
-  /**
-   * Toggle favorito de un libro.
-   */
   toggleFavorite: async (bookId: string) => {
-    const books = get().books.map(book =>
-      book.id === bookId ? { ...book, isFavorite: !book.isFavorite } : book
-    );
+    const books = get().books.map(b => (b.id === bookId ? { ...b, isFavorite: !b.isFavorite } : b));
     set({ books });
     await StorageService.saveLibrary(books);
   },
 
-  /**
-   * Actualiza la última vez que se abrió un libro.
-   */
   updateLastOpened: async (bookId: string) => {
-    const books = get().books.map(book =>
-      book.id === bookId ? { ...book, lastOpenedAt: Date.now() } : book
-    );
+    const books = get().books.map(b => (b.id === bookId ? { ...b, lastOpenedAt: Date.now() } : b));
     set({ books });
     await StorageService.saveLibrary(books);
   },
 
-  /**
-   * Cambia la portada del libro generando/extrayendo la miniatura de la página especificada (1-indexed).
-   */
+  setBookPageCount: (bookId: string, pageCount: number) => {
+    const book = get().books.find(b => b.id === bookId);
+    if (!book || pageCount <= 0 || book.pageCount === pageCount) return;
+    const books = get().books.map(b => (b.id === bookId ? { ...b, pageCount } : b));
+    set({ books });
+    StorageService.saveLibrary(books);
+  },
+
   updateBookCover: async (bookId: string, pageNumber: number) => {
     const book = get().books.find(b => b.id === bookId);
     if (!book || pageNumber < 1) return undefined;
+    if (book.pageCount && pageNumber > book.pageCount) return undefined;
 
-    try {
-      let newCoverUri: string | undefined;
-
-      if (book.format === '.cbr' || book.format === '.cbz') {
-        // Para cómics, verificar si las páginas ya están extraídas
-        const pages = await ComicService.extractComicPages(book.id, book.filePath);
-        const targetIndex = pageNumber - 1;
-        if (pages.length > 0 && targetIndex >= 0 && targetIndex < pages.length) {
-          newCoverUri = pages[targetIndex];
-        }
-      } else {
-        // Para PDFs, generar miniatura de la página solicitada (0-indexed en nativo)
-        const cleanPath = Platform.OS === 'android' ? book.filePath.replace('file://', '') : book.filePath;
-        const result = await PdfThumbnail.generate(cleanPath, pageNumber - 1, 100);
-        newCoverUri = result.uri;
-      }
-
-      if (newCoverUri) {
-        const books = get().books.map(b =>
-          b.id === bookId ? { ...b, coverUri: newCoverUri, coverPage: pageNumber } : b
-        );
-        set({ books });
-        await StorageService.saveLibrary(books);
-        return newCoverUri;
-      }
-    } catch (err) {
-      console.error('[LibraryStore] Error updating cover for book:', bookId, err);
-    }
-    return undefined;
+    const result = await BookCache.generateCover(book, pageNumber);
+    if (!result) return undefined;
+    const books = get().books.map(b =>
+      b.id === bookId
+        ? { ...b, coverUri: result.uri, coverPage: pageNumber, pageCount: result.pageCount ?? b.pageCount }
+        : b,
+    );
+    set({ books });
+    await StorageService.saveLibrary(books);
+    return result.uri;
   },
 
-  // ─── Acciones en lote ──────────────────────────────────────────────────
-
-  /**
-   * Modifica en lote el estado de favoritos. Si todos son favoritos, los quita.
-   * Si no, los marca a todos como favoritos.
-   */
   toggleFavoriteBatch: async (bookIds: string[]) => {
-    const currentBooks = get().books;
-    const selectedBooks = currentBooks.filter(b => bookIds.includes(b.id));
-    const allAreFavorites = selectedBooks.every(b => b.isFavorite);
-
-    const books = currentBooks.map(book => {
-      if (bookIds.includes(book.id)) {
-        return { ...book, isFavorite: !allAreFavorites };
-      }
-      return book;
-    });
-
+    const ids = new Set(bookIds);
+    const current = get().books;
+    const allFavorites = current.filter(b => ids.has(b.id)).every(b => b.isFavorite);
+    const books = current.map(b => (ids.has(b.id) ? { ...b, isFavorite: !allFavorites } : b));
     set({ books });
     await StorageService.saveLibrary(books);
   },
 
-  /**
-   * Marca en lote los libros seleccionados con 100% de progreso de lectura.
-   */
   markAsReadBatch: async (bookIds: string[]) => {
-    const { progress } = get();
-    const updatedProgress = { ...progress };
+    const { progress, books } = get();
+    const updated = { ...progress };
     const now = Date.now();
-
     for (const id of bookIds) {
-      const existing = progress[id];
-      const totalPages = existing && existing.totalPages > 0 ? existing.totalPages : 1;
-      const newProg: ReadingProgress = {
+      const book = books.find(b => b.id === id);
+      const total = progress[id]?.totalPages || book?.pageCount || 0;
+      const entry: ReadingProgress = {
         bookId: id,
-        currentPage: totalPages - 1,
-        totalPages: totalPages,
+        currentPage: Math.max(0, total - 1),
+        totalPages: total,
         percentage: 100,
         lastReadAt: now,
       };
-      updatedProgress[id] = newProg;
-      await StorageService.saveProgress(newProg, true);
+      updated[id] = entry;
+      await StorageService.saveProgress(entry, true);
     }
-
-    set({ progress: updatedProgress });
+    set({ progress: updated });
   },
 
-  /**
-   * Elimina en lote varios libros de la biblioteca.
-   */
+  markAsUnreadBatch: async (bookIds: string[]) => {
+    const { progress } = get();
+    const updated = { ...progress };
+    const now = Date.now();
+    for (const id of bookIds) {
+      const entry: ReadingProgress = {
+        bookId: id,
+        currentPage: 0,
+        totalPages: progress[id]?.totalPages ?? 0,
+        percentage: 0,
+        lastReadAt: now,
+      };
+      updated[id] = entry;
+      await StorageService.saveProgress(entry, true);
+    }
+    set({ progress: updated });
+  },
+
+  /** Removes books from the library (files stay on disk and are skipped on future rescans). */
   deleteBooksBatch: async (bookIds: string[]) => {
-    const books = get().books.filter(book => !bookIds.includes(book.id));
-    set({ books });
+    const ids = new Set(bookIds);
+    const removed = get().books.filter(b => ids.has(b.id));
+    const books = get().books.filter(b => !ids.has(b.id));
+    const progress = { ...get().progress };
+    bookIds.forEach(id => delete progress[id]);
+    set({ books, progress });
+
+    const excluded = await StorageService.getExcludedPaths();
+    await StorageService.saveExcludedPaths([...new Set([...excluded, ...removed.map(b => b.filePath)])]);
+    await StorageService.forgetBooks(bookIds);
     await StorageService.saveLibrary(books);
+    removed.forEach(b => BookCache.deleteBookCache(b.id));
   },
 
   /**
-   * Asigna una carpeta/colección en lote a los libros seleccionados.
+   * Saves the manual reading order of a collection (`orderedIds`, first to last), or clears it
+   * (`null`) for the books in `collectionIds` so they fall back to natural order.
    */
-  assignFolderBatch: async (bookIds: string[], folderName: string) => {
-    const normalizedFolder = folderName.trim() || undefined;
-    const books = get().books.map(book => {
-      if (bookIds.includes(book.id)) {
-        return { ...book, folder: normalizedFolder };
-      }
-      return book;
+  setReadingOrder: async (orderedIds: string[] | null, collectionIds: string[] = []) => {
+    const position = new Map((orderedIds ?? []).map((id, index) => [id, index]));
+    const cleared = new Set(orderedIds ? [] : collectionIds);
+    const books = get().books.map(b => {
+      if (position.has(b.id)) return { ...b, order: position.get(b.id) };
+      if (cleared.has(b.id)) return { ...b, order: undefined };
+      return b;
     });
-
     set({ books });
     await StorageService.saveLibrary(books);
   },
 
-  // ─── Selectores ────────────────────────────────────────────────────────
-
-  getFilteredBooks: () => {
-    const { books, scannedFolders, searchQuery, activeSection } = get();
-    
-    // Filtrar únicamente los libros pertenecientes a carpetas activas
-    const enabledFolders = scannedFolders.filter(f => f.enabled);
-    let filtered = books.filter(book =>
-      enabledFolders.some(f => book.filePath.startsWith(f.uri))
-    );
-
-    // Filtrar por búsqueda
-    if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase();
-      filtered = filtered.filter(
-        book =>
-          book.title.toLowerCase().includes(query) ||
-          book.fileName.toLowerCase().includes(query)
-      );
-    }
-
-    // Filtrar por sección
-    switch (activeSection) {
-      case 'recent':
-        filtered = filtered
-          .filter(b => b.lastOpenedAt)
-          .sort((a, b) => (b.lastOpenedAt ?? 0) - (a.lastOpenedAt ?? 0));
-        break;
-      case 'favorites':
-        filtered = filtered.filter(b => b.isFavorite);
-        break;
-      case 'folders':
-        // Ordenado por el nombre de la carpeta (primero los que pertenecen a una carpeta)
-        filtered = [...filtered].sort((a, b) => {
-          if (a.folder && !b.folder) return -1;
-          if (!a.folder && b.folder) return 1;
-          if (a.folder && b.folder) return a.folder.localeCompare(b.folder);
-          return a.title.localeCompare(b.title);
-        });
-        break;
-    }
-
-    return filtered;
-  },
-
-  getRecentBooks: () => {
-    const { books, scannedFolders } = get();
-    const enabledFolders = scannedFolders.filter(f => f.enabled);
-    return books
-      .filter(book => enabledFolders.some(f => book.filePath.startsWith(f.uri)))
-      .filter(b => b.lastOpenedAt)
-      .sort((a, b) => (b.lastOpenedAt ?? 0) - (a.lastOpenedAt ?? 0))
-      .slice(0, 10);
-  },
-
-  getFavoriteBooks: () => {
-    const { books, scannedFolders } = get();
-    const enabledFolders = scannedFolders.filter(f => f.enabled);
-    return books
-      .filter(book => enabledFolders.some(f => book.filePath.startsWith(f.uri)))
-      .filter(b => b.isFavorite);
+  assignFolderBatch: async (bookIds: string[], folderName: string) => {
+    const ids = new Set(bookIds);
+    const folder = folderName.trim() || undefined;
+    const books = get().books.map(b => (ids.has(b.id) ? { ...b, folder } : b));
+    set({ books });
+    await StorageService.saveLibrary(books);
   },
 }));
+
+// ─── Pure selectors (memoize in components with useMemo) ─────────────────────
+
+export function selectActiveBooks(books: BookFile[], folders: StorageService.ScannedFolder[]): BookFile[] {
+  return books.filter(b => isInEnabledFolder(b, folders));
+}
+
+export function selectRecent(activeBooks: BookFile[], limit = 20): BookFile[] {
+  return activeBooks
+    .filter(b => b.lastOpenedAt)
+    .sort((a, b) => (b.lastOpenedAt ?? 0) - (a.lastOpenedAt ?? 0))
+    .slice(0, limit);
+}
+
+export function matchesQuery(book: BookFile, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return (
+    book.title.toLowerCase().includes(q) ||
+    book.fileName.toLowerCase().includes(q) ||
+    (book.folder ?? '').toLowerCase().includes(q)
+  );
+}

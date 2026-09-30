@@ -9,6 +9,7 @@ import { RootStackParamList } from '../utils/types';
 import { COLORS } from '../utils/constants';
 import DashboardScreen from '../screens/DashboardScreen';
 import ReaderScreen from '../screens/ReaderScreen';
+import StatsScreen from '../screens/StatsScreen';
 
 const Stack = createStackNavigator<RootStackParamList>();
 
@@ -54,6 +55,7 @@ export default function AppNavigator() {
             gestureEnabled: false, // Prevenir swipe back accidental durante lectura
           }}
         />
+        <Stack.Screen name="Stats" component={StatsScreen} options={{ title: 'Mi lectura' }} />
       </Stack.Navigator>
     </NavigationContainer>
   );

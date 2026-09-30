@@ -1,1249 +1,819 @@
 /**
  * InkTrick - Dashboard Screen
- * Pantalla principal con carruseles horizontales para manga/anime.
- * Estilo Netflix/Crunchyroll con soporte para miniaturas PDF y barra de progreso.
+ * Library home: continue reading, favorites and collections as carousels, plus grid views for
+ * recent books, a collection or search results.
+ * Long press a card to select books.
  */
-import React, { useEffect, useCallback, useState, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  View,
-  Text,
-  FlatList,
-  TouchableOpacity,
-  StyleSheet,
-  useWindowDimensions,
   ActivityIndicator,
-  StatusBar,
-  Animated,
   Alert,
+  BackHandler,
+  FlatList,
   Modal,
-  TextInput,
-  Image,
+  Pressable,
   ScrollView,
-  Platform,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  useWindowDimensions,
+  View,
 } from 'react-native';
 import { StackNavigationProp } from '@react-navigation/stack';
-import * as FileSystem from 'expo-file-system/legacy';
-import PdfThumbnail from 'react-native-pdf-thumbnail';
-import { RootStackParamList, BookFile } from '../utils/types';
-import { useLibraryStore } from '../store/libraryStore';
-import { COLORS, GRID_COLUMNS_MOBILE, GRID_COLUMNS_TABLET, TABLET_BREAKPOINT } from '../utils/constants';
-import * as ComicService from '../services/comicService';
-import * as BookPreloadService from '../services/bookPreloadService';
+import { useFocusEffect } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Image } from 'expo-image';
+import { LinearGradient } from 'expo-linear-gradient';
+import { BookFile, RootStackParamList } from '../utils/types';
+import { COLORS } from '../utils/constants';
+import { belongsToFolder, matchesQuery, selectActiveBooks, selectRecent, useLibraryStore } from '../store/libraryStore';
+import { formatBytes, formatRelativeDate, shortTitles, sortBooksNatural, sortSeries } from '../utils/format';
+import BookCard from '../components/library/BookCard';
+import ReorderGrid from '../components/library/ReorderGrid';
+import { ScrollView as GHScrollView } from 'react-native-gesture-handler';
 import {
-  StarIcon,
+  ArrowIcon,
+  BackIcon,
+  ChartIcon,
   CheckDoneIcon,
-  ImageIcon,
-  FolderIcon,
-  TrashIcon,
   CloseIcon,
+  FolderIcon,
+  ImageIcon,
+  ReadIcon,
   RefreshIcon,
+  SearchIcon,
+  SortIcon,
+  StarIcon,
+  TrashIcon,
 } from '../components/Icons';
 
-let PdfComponent: any = null;
-let isPdfSupported = false;
+type Props = {
+  navigation: StackNavigationProp<RootStackParamList, 'Dashboard'>;
+};
 
-try {
-  const requirePdf = require('react-native-pdf');
-  PdfComponent = requirePdf.default || requirePdf;
-  isPdfSupported = !!PdfComponent;
-} catch (error) {
-  console.log('[DashboardScreen] react-native-pdf not supported in this environment.');
-}
-
-type DashboardNavigationProp = StackNavigationProp<RootStackParamList, 'Dashboard'>;
-
-interface Props {
-  navigation: DashboardNavigationProp;
-}
+const UNSORTED = 'Sin clasificar';
+const GRID_GAP = 12;
+const H_PADDING = 20;
 
 export default function DashboardScreen({ navigation }: Props) {
   const { width } = useWindowDimensions();
-  const isTablet = width >= TABLET_BREAKPOINT;
-  const numColumns = isTablet ? GRID_COLUMNS_TABLET : GRID_COLUMNS_MOBILE;
+  const insets = useSafeAreaInsets();
+  const isTablet = width >= 700;
 
-  // Store
-  const {
-    books,
-    progress,
-    scannedFolders,
-    isScanning,
-    isLoaded,
-    loadLibrary,
-    addFolderAndIndex,
-    refreshLibrary,
-    updateLastOpened,
-    updateBookCover,
-    toggleFavoriteBatch,
-    markAsReadBatch,
-    deleteBooksBatch,
-    assignFolderBatch,
-    toggleFolder,
-    deleteFolder,
-    getRecentBooks,
-    getFavoriteBooks,
-  } = useLibraryStore();
+  // Store (individual selectors: the screen only re-renders for data it shows).
+  const books = useLibraryStore(s => s.books);
+  const progress = useLibraryStore(s => s.progress);
+  const scannedFolders = useLibraryStore(s => s.scannedFolders);
+  const isScanning = useLibraryStore(s => s.isScanning);
+  const isLoaded = useLibraryStore(s => s.isLoaded);
+  const searchQuery = useLibraryStore(s => s.searchQuery);
+  const actions = useMemo(() => useLibraryStore.getState(), []);
 
-  const [showSplash, setShowSplash] = useState(true);
-  const progressAnim = useRef(new Animated.Value(0)).current;
-
-  // Estados de multiselección y agrupamiento
-  const [isSelectionMode, setIsSelectionMode] = useState(false);
-  const [selectedBookIds, setSelectedBookIds] = useState<string[]>([]);
-  const [isOptionsMenuVisible, setIsOptionsMenuVisible] = useState(false);
-  const [isFolderModalVisible, setIsFolderModalVisible] = useState(false);
-  const [isFoldersModalVisible, setIsFoldersModalVisible] = useState(false);
-  const [newFolderName, setNewFolderName] = useState('');
-  
-  // Estados para modal de Cambiar Portada
-  const [isCoverModalVisible, setIsCoverModalVisible] = useState(false);
+  const [section, setSection] = useState<string | null>(null); // null = home
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [optionsVisible, setOptionsVisible] = useState(false);
+  const [groupModalVisible, setGroupModalVisible] = useState(false);
+  const [foldersModalVisible, setFoldersModalVisible] = useState(false);
+  const [newGroupName, setNewGroupName] = useState('');
+  const [coverModalVisible, setCoverModalVisible] = useState(false);
   const [coverPageInput, setCoverPageInput] = useState('1');
-  const [isCoverLoading, setIsCoverLoading] = useState(false);
-  const [coverPreviewUri, setCoverPreviewUri] = useState<string | null>(null);
+  const [coverLoading, setCoverLoading] = useState(false);
+  // Reorder mode of a collection: working copy of the ids, saved with "Listo".
+  const [reorderIds, setReorderIds] = useState<string[] | null>(null);
 
-  // Estado de preparación de caché en lobby
-  const [preparingBookId, setPreparingBookId] = useState<string | null>(null);
-  const [preparingTitle, setPreparingTitle] = useState<string | null>(null);
-  const [preloadProgress, setPreloadProgress] = useState<BookPreloadService.PreloadProgress | null>(null);
-
-  // Sección de detalle activa (null = Home, 'recent' | 'favorites' | folderName = Detail)
-  const [activeDetailSection, setActiveDetailSection] = useState<string | null>(null);
-
-  useEffect(() => {
-    loadLibrary();
-    
-    // Iniciar la animación de la barra de progreso 3D
-    Animated.timing(progressAnim, {
-      toValue: 1,
-      duration: 1400,
-      useNativeDriver: false,
-    }).start();
-  }, []);
-
-  useEffect(() => {
-    if (isLoaded) {
-      const timer = setTimeout(() => {
-        setShowSplash(false);
-      }, 1500);
-      return () => clearTimeout(timer);
+  // ─── Derived data ────────────────────────────────────────────────────────
+  const activeBooks = useMemo(() => selectActiveBooks(books, scannedFolders), [books, scannedFolders]);
+  const recentBooks = useMemo(() => selectRecent(activeBooks), [activeBooks]);
+  const favoriteBooks = useMemo(() => sortBooksNatural(activeBooks.filter(b => b.isFavorite)), [activeBooks]);
+  const collections = useMemo(() => {
+    const groups = new Map<string, BookFile[]>();
+    for (const book of activeBooks) {
+      const name = book.folder || UNSORTED;
+      if (!groups.has(name)) groups.set(name, []);
+      groups.get(name)!.push(book);
     }
+    return [...groups.entries()]
+      .map(([name, list]) => ({ name, books: name === UNSORTED ? sortBooksNatural(list) : sortSeries(list) }))
+      .sort((a, b) => (a.name === UNSORTED ? 1 : b.name === UNSORTED ? -1 : a.name.localeCompare(b.name)));
+  }, [activeBooks]);
+
+  const titleMaps = useMemo(() => {
+    const map: Record<string, Record<string, string>> = {};
+    collections.forEach(c => (map[c.name] = c.name === UNSORTED ? {} : shortTitles(c.books)));
+    return map;
+  }, [collections]);
+
+  const titleFor = useCallback(
+    (book: BookFile, inCollection: boolean) =>
+      inCollection ? titleMaps[book.folder || UNSORTED]?.[book.id] ?? book.title : book.title,
+    [titleMaps],
+  );
+
+  const isSearching = searchOpen && searchQuery.trim().length > 0;
+  const gridBooks = useMemo(() => {
+    if (isSearching) return sortBooksNatural(activeBooks.filter(b => matchesQuery(b, searchQuery)));
+    if (section === 'recent') return recentBooks;
+    if (section === 'favorites') return favoriteBooks;
+    if (section) {
+      const list = collections.find(c => c.name === section)?.books ?? [];
+      if (!reorderIds) return list;
+      const byId = new Map(list.map(b => [b.id, b]));
+      return reorderIds.map(id => byId.get(id)).filter((b): b is BookFile => !!b);
+    }
+    return [];
+  }, [activeBooks, collections, favoriteBooks, isSearching, recentBooks, reorderIds, searchQuery, section]);
+  const inCollectionGrid = !!section && !['recent', 'favorites'].includes(section) && !isSearching;
+  const canReorder = inCollectionGrid && section !== UNSORTED && gridBooks.length > 1;
+
+  // Leaving the collection cancels an unsaved reorder.
+  useEffect(() => setReorderIds(null), [section]);
+
+  const startReorder = useCallback(() => setReorderIds(gridBooks.map(b => b.id)), [gridBooks]);
+  const moveBook = useCallback((id: string, to: number) => {
+    setReorderIds(prev => {
+      if (!prev) return prev;
+      const from = prev.indexOf(id);
+      if (from < 0 || to < 0 || to >= prev.length || from === to) return prev;
+      const next = [...prev];
+      next.splice(from, 1);
+      next.splice(to, 0, id);
+      return next;
+    });
+  }, []);
+  const saveReorder = useCallback(async () => {
+    if (reorderIds) await actions.setReadingOrder(reorderIds);
+    setReorderIds(null);
+  }, [actions, reorderIds]);
+  const resetReorder = useCallback(() => {
+    Alert.alert('Orden por nombre', '¿Volver a ordenar esta colección por nombre (Tomo 1, 2, 10...)?', [
+      { text: 'Cancelar', style: 'cancel' },
+      {
+        text: 'Sí',
+        onPress: async () => {
+          await actions.setReadingOrder(null, gridBooks.map(b => b.id));
+          setReorderIds(null);
+        },
+      },
+    ]);
+  }, [actions, gridBooks]);
+
+  const numColumns = Math.max(2, Math.floor((width - H_PADDING * 2 + GRID_GAP) / ((isTablet ? 170 : 150) + GRID_GAP)));
+  const gridCardWidth = (width - H_PADDING * 2 - GRID_GAP * (numColumns - 1)) / numColumns;
+  const carouselCardWidth = isTablet ? 160 : 132;
+
+  const percentOf = useCallback((id: string) => Math.round(progress[id]?.percentage ?? 0), [progress]);
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const selectedBooks = useMemo(() => books.filter(b => selectedSet.has(b.id)), [books, selectedSet]);
+  const allSelectedFavorite = selectedBooks.length > 0 && selectedBooks.every(b => b.isFavorite);
+  const allSelectedRead = selectedBooks.length > 0 && selectedBooks.every(b => percentOf(b.id) >= 100);
+  const anySelectedStarted = selectedBooks.some(b => percentOf(b.id) > 0);
+
+  // ─── Lifecycle ───────────────────────────────────────────────────────────
+  // Pick up new/removed files automatically once per launch.
+  useEffect(() => {
+    if (isLoaded && scannedFolders.some(f => f.enabled)) actions.refreshLibrary(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLoaded]);
 
-  // Obtener libros recientes y favoritos de las carpetas habilitadas
-  const recentBooks = getRecentBooks();
-  const favoriteBooks = getFavoriteBooks();
-
-  // Obtener colecciones/carpetas únicas y su conteo de libros (solo de carpetas activas)
-  const foldersList = React.useMemo(() => {
-    const groups: Record<string, BookFile[]> = {};
-    const enabledFolders = scannedFolders.filter(f => f.enabled);
-    const activeBooks = books.filter(book =>
-      enabledFolders.some(f => book.filePath.startsWith(f.uri))
-    );
-
-    activeBooks.forEach(book => {
-      const folderName = book.folder || 'Sin clasificar';
-      if (!groups[folderName]) {
-        groups[folderName] = [];
-      }
-      groups[folderName].push(book);
-    });
-
-    return Object.keys(groups).map(name => ({
-      name,
-      books: groups[name],
-      count: groups[name].length,
-    })).sort((a, b) => {
-      if (a.name === 'Sin clasificar') return 1;
-      if (b.name === 'Sin clasificar') return -1;
-      return a.name.localeCompare(b.name);
-    });
-  }, [books, scannedFolders]);
-
-  // Libros a desplegar en vista detallada
-  const displayBooks = React.useMemo(() => {
-    if (!activeDetailSection) return [];
-    if (activeDetailSection === 'recent') return recentBooks;
-    if (activeDetailSection === 'favorites') return favoriteBooks;
-    
-    // De lo contrario, es una carpeta de agrupación
-    const enabledFolders = scannedFolders.filter(f => f.enabled);
-    const activeBooks = books.filter(book =>
-      enabledFolders.some(f => book.filePath.startsWith(f.uri))
-    );
-    return activeBooks.filter(b => (b.folder || 'Sin clasificar') === activeDetailSection);
-  }, [activeDetailSection, books, scannedFolders, recentBooks, favoriteBooks]);
-
-  const toggleBookSelection = useCallback((bookId: string) => {
-    setSelectedBookIds(prev => {
-      const exists = prev.includes(bookId);
-      let updated;
-      if (exists) {
-        updated = prev.filter(id => id !== bookId);
-      } else {
-        updated = [...prev, bookId];
-      }
-      
-      if (updated.length === 0) {
-        setIsSelectionMode(false);
-      }
-      return updated;
-    });
-  }, []);
-
-  const handleBookPress = useCallback(
-    async (book: BookFile) => {
-      if (isSelectionMode) {
-        toggleBookSelection(book.id);
-      } else {
-        await updateLastOpened(book.id);
-        setPreparingBookId(book.id);
-        setPreparingTitle(book.title);
-        setPreloadProgress(null);
-
-        const path = book.filePath;
-        let finalPath = path;
-
-        try {
-          if (book.format === '.cbr' || book.format === '.cbz') {
-            // Precargar el 100% de páginas del cómic con barra de progreso en vivo
-            await BookPreloadService.preloadBook(book, (prog) => {
-              setPreloadProgress(prog);
-            });
-            navigation.navigate('Reader', { bookId: book.id });
-          } else {
-            // Pre-copiamos el PDF al directorio de caché seguro de la app si es content://
-            if (path.startsWith('content://')) {
-              const safeFileName = `${book.id}.pdf`;
-              const tempUri = `${FileSystem.cacheDirectory}${safeFileName}`;
-
-              const info = await FileSystem.getInfoAsync(tempUri);
-              if (!info.exists) {
-                console.log('[DashboardScreen] Pre-loading PDF to local cache:', tempUri);
-                await FileSystem.copyAsync({
-                  from: path,
-                  to: tempUri,
-                });
-              }
-              finalPath = tempUri;
-            }
-
-            // Pre-extraer conteo nativo e inicializar la caché de lectura
-            const cleanPath = Platform.OS === 'android' ? finalPath.replace('file://', '') : finalPath;
-            try {
-              await (PdfThumbnail as any).getPageCount(cleanPath);
-            } catch (e) {}
-
-            navigation.navigate('Reader', { bookId: book.id, preparedPath: finalPath });
-          }
-        } catch (err) {
-          console.error('[DashboardScreen] Error preparing book:', err);
-          navigation.navigate('Reader', { bookId: book.id, preparedPath: path });
-        } finally {
-          setPreparingBookId(null);
-          setPreparingTitle(null);
-          setPreloadProgress(null);
-        }
-      }
-    },
-    [navigation, updateLastOpened, isSelectionMode, toggleBookSelection]
-  );
-
-  const handleBookLongPress = useCallback(
-    (book: BookFile) => {
-      if (!isSelectionMode) {
-        setIsSelectionMode(true);
-        setSelectedBookIds([book.id]);
-      }
-    },
-    [isSelectionMode]
-  );
-
   const cancelSelection = useCallback(() => {
-    setIsSelectionMode(false);
-    setSelectedBookIds([]);
-    setIsOptionsMenuVisible(false);
+    setSelectionMode(false);
+    setSelectedIds([]);
+    setOptionsVisible(false);
   }, []);
 
-  const handleToggleFavoriteBatch = useCallback(async () => {
-    if (selectedBookIds.length === 0) return;
-    setIsOptionsMenuVisible(false);
-    await toggleFavoriteBatch(selectedBookIds);
-    cancelSelection();
-  }, [selectedBookIds, toggleFavoriteBatch, cancelSelection]);
+  // Hardware back: leave selection / search / section before leaving the app.
+  useFocusEffect(
+    useCallback(() => {
+      const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+        if (selectionMode) {
+          cancelSelection();
+          return true;
+        }
+        if (searchOpen) {
+          setSearchOpen(false);
+          actions.setSearchQuery('');
+          return true;
+        }
+        if (reorderIds) {
+          setReorderIds(null);
+          return true;
+        }
+        if (section) {
+          setSection(null);
+          return true;
+        }
+        return false;
+      });
+      return () => sub.remove();
+    }, [actions, cancelSelection, reorderIds, searchOpen, section, selectionMode]),
+  );
 
-  const handleMarkAsReadBatch = useCallback(async () => {
-    if (selectedBookIds.length === 0) return;
-    setIsOptionsMenuVisible(false);
-    await markAsReadBatch(selectedBookIds);
-    cancelSelection();
-  }, [selectedBookIds, markAsReadBatch, cancelSelection]);
+  // ─── Handlers ────────────────────────────────────────────────────────────
+  const openBook = useCallback(
+    (book: BookFile) => {
+      actions.updateLastOpened(book.id);
+      navigation.navigate('Reader', { bookId: book.id });
+    },
+    [actions, navigation],
+  );
 
-  const handleOpenCoverModal = useCallback(() => {
-    if (selectedBookIds.length !== 1) return;
-    const targetBook = books.find(b => b.id === selectedBookIds[0]);
-    if (!targetBook) return;
-    setCoverPreviewUri(targetBook.coverUri || null);
-    setCoverPageInput(targetBook.coverPage ? targetBook.coverPage.toString() : '1');
-    setIsOptionsMenuVisible(false);
-    setIsCoverModalVisible(true);
-  }, [selectedBookIds, books]);
+  const toggleSelected = useCallback((id: string) => {
+    setSelectedIds(prev => {
+      const next = prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id];
+      if (next.length === 0) setSelectionMode(false);
+      return next;
+    });
+  }, []);
 
-  const handleSaveCover = useCallback(async () => {
-    if (selectedBookIds.length !== 1) return;
-    const page = parseInt(coverPageInput, 10);
-    if (isNaN(page) || page < 1) {
-      Alert.alert('Número de página inválido', 'Por favor ingresa un número de página mayor o igual a 1.');
-      return;
-    }
+  const onCardPress = useCallback(
+    (book: BookFile) => (selectionMode ? toggleSelected(book.id) : openBook(book)),
+    [openBook, selectionMode, toggleSelected],
+  );
 
-    setIsCoverLoading(true);
-    try {
-      const newUri = await updateBookCover(selectedBookIds[0], page);
-      if (newUri) {
-        setCoverPreviewUri(newUri);
-        setIsCoverModalVisible(false);
-        cancelSelection();
-      } else {
-        Alert.alert('Error', 'No se pudo extraer la portada de la página especificada. Verifica que la página exista en el documento.');
+  const onCardLongPress = useCallback(
+    (book: BookFile) => {
+      if (selectionMode) {
+        toggleSelected(book.id);
+        return;
       }
-    } catch (err) {
-      Alert.alert('Error', 'Ocurrió un error al generar la nueva portada.');
-    } finally {
-      setIsCoverLoading(false);
-    }
-  }, [selectedBookIds, coverPageInput, updateBookCover, cancelSelection]);
+      setSelectionMode(true);
+      setSelectedIds([book.id]);
+    },
+    [selectionMode, toggleSelected],
+  );
 
-  const handleDeleteBatch = useCallback(() => {
-    if (selectedBookIds.length === 0) return;
-    setIsOptionsMenuVisible(false);
+  const runBatch = useCallback(
+    async (fn: (ids: string[]) => Promise<void>) => {
+      if (selectedIds.length === 0) return;
+      setOptionsVisible(false);
+      await fn(selectedIds);
+      cancelSelection();
+    },
+    [cancelSelection, selectedIds],
+  );
+
+  const confirmDelete = useCallback(() => {
+    setOptionsVisible(false);
     Alert.alert(
-      'Eliminar libros',
-      `¿Estás seguro de que deseas eliminar los ${selectedBookIds.length} libros seleccionados de tu biblioteca?`,
+      'Quitar de la biblioteca',
+      `Se quitarán ${selectedIds.length} libro(s) de InkTrick. Los archivos NO se borran del dispositivo y no volverán a aparecer al actualizar.`,
       [
         { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Eliminar',
-          style: 'destructive',
-          onPress: async () => {
-            await deleteBooksBatch(selectedBookIds);
-            cancelSelection();
-          },
-        },
-      ]
+        { text: 'Quitar', style: 'destructive', onPress: () => runBatch(actions.deleteBooksBatch) },
+      ],
     );
-  }, [selectedBookIds, deleteBooksBatch, cancelSelection]);
+  }, [actions, runBatch, selectedIds.length]);
 
-  const handleAssignFolderBatch = useCallback(async () => {
-    const folderName = newFolderName.trim();
-    await assignFolderBatch(selectedBookIds, folderName);
-    setNewFolderName('');
-    setIsFolderModalVisible(false);
-    cancelSelection();
-  }, [selectedBookIds, newFolderName, assignFolderBatch, cancelSelection]);
+  const selectedBook = selectedBooks.length === 1 ? selectedBooks[0] : undefined;
 
-  const handleAssignToExistingFolder = useCallback(async (folderName: string) => {
-    await assignFolderBatch(selectedBookIds, folderName);
-    setIsFolderModalVisible(false);
-    cancelSelection();
-  }, [selectedBookIds, assignFolderBatch, cancelSelection]);
+  const openCoverModal = useCallback(() => {
+    if (!selectedBook) return;
+    setCoverPageInput(String(selectedBook.coverPage ?? 1));
+    setOptionsVisible(false);
+    setCoverModalVisible(true);
+  }, [selectedBook]);
 
-  const handleScan = useCallback(() => {
-    if (isSelectionMode) return;
-    setIsFoldersModalVisible(true);
-  }, [isSelectionMode]);
+  const saveCover = useCallback(async () => {
+    if (!selectedBook) return;
+    const page = parseInt(coverPageInput, 10);
+    const max = selectedBook.pageCount;
+    if (isNaN(page) || page < 1 || (max && page > max)) {
+      Alert.alert('Página inválida', max ? `Ingresa un número entre 1 y ${max}.` : 'Ingresa un número de página válido.');
+      return;
+    }
+    setCoverLoading(true);
+    const uri = await actions.updateBookCover(selectedBook.id, page);
+    setCoverLoading(false);
+    if (uri) {
+      setCoverModalVisible(false);
+      cancelSelection();
+    } else {
+      Alert.alert('Error', 'No se pudo generar la portada con esa página.');
+    }
+  }, [actions, cancelSelection, coverPageInput, selectedBook]);
 
-  // ─── Render de cada libro (Carrusel o Cuadrícula) ──────────────────────
-  const renderBookItem = (item: BookFile, isHorizontal = false) => {
-    const cardWidth = isHorizontal
-      ? 130
-      : (width - 48 - (numColumns - 1) * 12) / numColumns;
-    const isSelected = selectedBookIds.includes(item.id);
+  const closeGroupModal = useCallback(() => {
+    setNewGroupName('');
+    setGroupModalVisible(false);
+  }, []);
 
-    // Calcular el porcentaje de lectura guardado
-    const bookProgress = progress[item.id];
-    const percentage = bookProgress ? Math.round(bookProgress.percentage) : 0;
+  const assignGroup = useCallback(
+    async (name: string) => {
+      await actions.assignFolderBatch(selectedIds, name);
+      closeGroupModal();
+      cancelSelection();
+    },
+    [actions, cancelSelection, closeGroupModal, selectedIds],
+  );
 
-    return (
-      <TouchableOpacity
-        style={[
-          styles.bookCard,
-          {
-            width: cardWidth,
-            backgroundColor: COLORS.surface,
-            borderColor: isSelected ? COLORS.accent : COLORS.border,
-            borderWidth: isSelected ? 2 : 1,
-            opacity: isSelectionMode && !isSelected ? 0.6 : 1,
-          },
-          isHorizontal && { marginRight: 12 },
-        ]}
-        onPress={() => handleBookPress(item)}
-        onLongPress={() => handleBookLongPress(item)}
-        activeOpacity={0.7}
-      >
-        {/* Checkbox en modo multiselección */}
-        {isSelectionMode && (
-          <View
-            style={[
-              styles.checkboxContainer,
-              {
-                backgroundColor: isSelected ? '#FFFFFF' : 'rgba(0, 0, 0, 0.5)',
-                borderColor: '#FFFFFF',
-              },
-            ]}
-          >
-            {isSelected && <Text style={styles.checkboxCheck}>✓</Text>}
+  const toggleSearch = useCallback(() => {
+    setSearchOpen(open => {
+      if (open) actions.setSearchQuery('');
+      return !open;
+    });
+  }, [actions]);
+
+  // ─── Render helpers ──────────────────────────────────────────────────────
+  const renderCard = (book: BookFile, cardWidth: number, inCollection: boolean) => (
+    <BookCard
+      key={book.id}
+      book={book}
+      title={titleFor(book, inCollection)}
+      width={cardWidth}
+      percentage={percentOf(book.id)}
+      selectionMode={selectionMode}
+      selected={selectedSet.has(book.id)}
+      onPress={onCardPress}
+      onLongPress={onCardLongPress}
+    />
+  );
+
+  const renderCarousel = (key: string, label: string, data: BookFile[], inCollection: boolean, icon?: React.ReactNode) => (
+    <View key={key} style={styles.carouselSection}>
+      <TouchableOpacity style={styles.carouselHeader} onPress={() => setSection(key)} activeOpacity={0.7}>
+        <View style={styles.carouselTitleRow}>
+          {icon}
+          <Text style={styles.carouselTitle} numberOfLines={1}>{label}</Text>
+          <View style={styles.countPill}>
+            <Text style={styles.countPillText}>{data.length}</Text>
           </View>
-        )}
-
-        {/* Cover Preview (Local Image o Generada automáticamente) */}
-        <View style={styles.coverContainer}>
-          {item.coverUri ? (
-            <Image
-              source={{ uri: item.coverUri }}
-              style={styles.coverImage}
-              resizeMode="cover"
-            />
-          ) : (
-            <View style={styles.formatPlaceholder}>
-              <Text style={[styles.formatBadge, { color: '#FFFFFF' }]}>
-                {item.format ? item.format.replace('.', '').toUpperCase() : 'MANGA'}
-              </Text>
-            </View>
-          )}
-
-          {/* Barra de progreso de lectura discreta en el fondo de la portada */}
-          {percentage > 0 && percentage < 100 && preparingBookId !== item.id && (
-            <View style={styles.coverProgressOverlay}>
-              <View style={styles.coverProgressBarBackground}>
-                <View style={[styles.coverProgressBar, { width: `${percentage}%` }]} />
-              </View>
-              <Text style={styles.coverProgressText}>{percentage}%</Text>
-            </View>
-          )}
-
-          {/* Banda de LEÍDO */}
-          {percentage === 100 && preparingBookId !== item.id && (
-            <View style={styles.readBanner}>
-              <Text style={styles.readBannerText}>LEÍDO</Text>
-            </View>
-          )}
-
-          {/* Banda inferior flotante "Abriendo..." en el mismo recuadro del libro */}
-          {preparingBookId === item.id && (
-            <View style={styles.cardLoadingOverlay}>
-              <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 6 }} />
-              <Text style={styles.cardLoadingText} numberOfLines={1}>
-                {preloadProgress && preloadProgress.total > 0
-                  ? `Cargando ${preloadProgress.percentage}%`
-                  : preloadProgress && preloadProgress.current > 0
-                  ? `Pág. ${preloadProgress.current}...`
-                  : 'Abriendo...'}
-              </Text>
-            </View>
-          )}
         </View>
-
-        {/* Info */}
-        <View style={styles.bookInfo}>
-          <Text
-            style={[styles.bookTitle, { color: COLORS.text }]}
-            numberOfLines={2}
-          >
-            {item.title}
-          </Text>
-        </View>
-
-        {/* Favorite indicator */}
-        {item.isFavorite && (
-          <View style={styles.favoriteIndicator}>
-            <Text>⭐</Text>
-          </View>
-        )}
+        <SeeAll label="Ver todo" />
       </TouchableOpacity>
-    );
-  };
+      <FlatList
+        horizontal
+        data={data}
+        keyExtractor={item => `${key}_${item.id}`}
+        renderItem={({ item }) => renderCard(item, carouselCardWidth, inCollection)}
+        extraData={[selectionMode, selectedIds, progress]}
+        ItemSeparatorComponent={() => <View style={{ width: GRID_GAP }} />}
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.carouselContent}
+        initialNumToRender={6}
+        maxToRenderPerBatch={6}
+        windowSize={5}
+      />
+    </View>
+  );
 
-  // ─── Render de Sección de Carrusel en Home ─────────────────────────────
-  const renderCarouselSection = (key: string, label: string, data: BookFile[]) => {
+  const renderHero = () => {
+    const book = recentBooks[0];
+    if (!book) return null;
+    const p = progress[book.id];
+    const pct = Math.round(p?.percentage ?? 0);
+    const pages = p?.totalPages || book.pageCount;
+    const status =
+      pct >= 100 ? 'Lectura finalizada' : p && pages ? `Página ${p.currentPage + 1} de ${pages}` : 'Sin comenzar';
+    const coverWidth = isTablet ? 190 : 118;
     return (
-      <View key={key} style={styles.carouselSection}>
-        <View style={styles.carouselHeader}>
-          <Text style={[styles.carouselTitle, { color: COLORS.text }]}>
-            {label}
-          </Text>
-          <TouchableOpacity
-            style={styles.carouselSeeAll}
-            onPress={() => setActiveDetailSection(key)}
-          >
-            <Text style={[styles.carouselSeeAllText, { color: COLORS.accent }]}>
-              Ver todo ➔
-            </Text>
+      <View>
+        <View style={styles.heroHeader}>
+          <Text style={styles.heroHeaderTitle}>Continuar leyendo</Text>
+          <TouchableOpacity onPress={() => setSection('recent')} accessibilityLabel="Ver libros recientes">
+            <SeeAll label="Recientes" />
           </TouchableOpacity>
         </View>
-
-        <FlatList
-          horizontal
-          data={data}
-          renderItem={({ item }) => renderBookItem(item, true)}
-          keyExtractor={item => `${key}_${item.id}`}
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.carouselListContent}
-          initialNumToRender={5}
-          maxToRenderPerBatch={6}
-          windowSize={5}
-          removeClippedSubviews={Platform.OS === 'android'}
+      <View style={styles.hero}>
+        {book.coverUri ? (
+          <Image cachePolicy="memory" source={{ uri: book.coverUri }} style={StyleSheet.absoluteFill} contentFit="cover" blurRadius={30} />
+        ) : null}
+        <LinearGradient
+          colors={['rgba(10,10,10,0.25)', 'rgba(10,10,10,0.72)', 'rgba(22,22,22,0.96)']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 0.4 }}
+          style={StyleSheet.absoluteFill}
         />
+        <View style={styles.heroBody}>
+          <View style={[styles.heroCover, { width: coverWidth }]}>
+            {book.coverUri ? (
+              <Image cachePolicy="memory" source={{ uri: book.coverUri }} style={StyleSheet.absoluteFill} contentFit="cover" transition={150} />
+            ) : (
+              <View style={styles.heroPlaceholder}>
+                <Text style={styles.heroPlaceholderText}>{book.format.replace('.', '').toUpperCase()}</Text>
+              </View>
+            )}
+          </View>
+          <View style={styles.heroInfo}>
+            <Text style={styles.heroTitle} numberOfLines={3}>{book.title}</Text>
+            {book.folder ? <Text style={styles.heroSeries}>{book.folder}</Text> : null}
+            <View style={styles.heroProgressRow}>
+              <View style={styles.heroTrack}>
+                <View style={[styles.heroFill, { width: `${Math.min(100, pct)}%` }]} />
+              </View>
+              <Text style={styles.heroPct}>{pct}%</Text>
+            </View>
+            <Text style={styles.heroStatus}>{status}</Text>
+            <Text style={styles.heroMeta}>
+              {book.format.replace('.', '').toUpperCase()} · {formatBytes(book.fileSize)}
+              {book.lastOpenedAt ? ` · ${formatRelativeDate(p?.lastReadAt ?? book.lastOpenedAt)}` : ''}
+            </Text>
+            <TouchableOpacity style={styles.heroButton} onPress={() => openBook(book)} activeOpacity={0.8}>
+              <ReadIcon size={17} color="#0A0A0A" />
+              <Text style={styles.heroButtonText}>{pct > 0 && pct < 100 ? 'Continuar' : 'Leer'}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
       </View>
     );
   };
 
-  if (showSplash) {
-    const widthInterpolate = progressAnim.interpolate({
-      inputRange: [0, 1],
-      outputRange: ['0%', '100%'],
-    });
+  // The splash screen (App.tsx) covers the library while it loads from disk.
+  if (!isLoaded) return <View style={styles.container} />;
 
-    return (
-      <View style={[styles.splashContainer, { backgroundColor: COLORS.background }]}>
-        <StatusBar barStyle="light-content" backgroundColor={COLORS.background} />
-        <View style={styles.splashContent}>
-          <Text style={[styles.splashTitle, { color: COLORS.text }]}>InkTrick</Text>
-          <Text style={[styles.splashSubtitle, { color: COLORS.text + '90' }]}>
-            インクトリック
-          </Text>
-          
-          <View style={[
-            styles.progressBarOuter, 
-            { 
-              backgroundColor: '#161616',
-              borderColor: COLORS.border
-            }
-          ]}>
-            <Animated.View style={[
-              styles.progressBarInner,
-              {
-                backgroundColor: COLORS.accent,
-                width: widthInterpolate,
-              }
-            ]} />
-          </View>
-        </View>
-      </View>
-    );
-  }
+  const gridTitle = isSearching
+    ? `Resultados (${gridBooks.length})`
+    : section === 'recent'
+    ? 'Recientes'
+    : section === 'favorites'
+    ? 'Favoritos'
+    : section ?? '';
 
-  // ─── Render Principal ──────────────────────────────────────────────────
   return (
-    <View style={[styles.container, { backgroundColor: COLORS.background }]}>
+    <View style={[styles.container, { paddingTop: insets.top }]}>
       <StatusBar barStyle="light-content" backgroundColor={COLORS.background} />
 
       {/* Header */}
-      {isSelectionMode ? (
-        <View style={[styles.header, { borderBottomColor: COLORS.border, backgroundColor: COLORS.surface }]}>
-          <Text style={[styles.headerTitle, { color: COLORS.text, fontSize: 18 }]}>
-            {selectedBookIds.length} seleccionados
+      {selectionMode ? (
+        <View style={[styles.header, styles.headerSelection]}>
+          <Text style={styles.selectionTitle}>
+            {selectedIds.length} {selectedIds.length === 1 ? 'seleccionado' : 'seleccionados'}
           </Text>
-          <View style={styles.selectionHeaderActions}>
-            <TouchableOpacity
-              style={[styles.cancelButton, { borderColor: COLORS.border }]}
-              onPress={cancelSelection}
-            >
-              <Text style={[styles.cancelButtonText, { color: COLORS.accent }]}>
-                Cancelar
-              </Text>
+          <View style={styles.headerActions}>
+            {(section || isSearching) && gridBooks.length > 0 && (
+              <TouchableOpacity style={styles.textBtn} onPress={() => setSelectedIds(gridBooks.map(b => b.id))}>
+                <Text style={styles.textBtnLabel}>Todos</Text>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity style={styles.textBtn} onPress={cancelSelection}>
+              <Text style={styles.textBtnLabel}>Cancelar</Text>
             </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.moreMenuButton, { borderColor: COLORS.border, backgroundColor: COLORS.background }]}
-              onPress={() => setIsOptionsMenuVisible(true)}
-              activeOpacity={0.7}
-            >
-              <Text style={[styles.moreMenuIcon, { color: COLORS.text }]}>⋮</Text>
+            <TouchableOpacity style={styles.circleBtn} onPress={() => setOptionsVisible(true)} accessibilityLabel="Acciones">
+              <Text style={styles.menuBtnText}>⋮</Text>
             </TouchableOpacity>
           </View>
         </View>
       ) : (
-        <View style={[styles.header, { borderBottomColor: COLORS.border }]}>
-          <Text style={[styles.headerTitle, { color: COLORS.text }]}>
-            InkTrick
-          </Text>
-          <View style={styles.headerButtonsRow}>
-            <TouchableOpacity
-              style={[
-                styles.scanButton,
-                {
-                  backgroundColor: COLORS.surface,
-                  borderColor: COLORS.border,
-                  borderWidth: 1,
-                  marginRight: 8,
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: 6,
-                  opacity: isScanning ? 0.6 : 1,
-                },
-              ]}
-              onPress={handleScan}
-              disabled={isScanning}
-            >
-              <FolderIcon size={16} color={COLORS.text} />
-              <Text style={[styles.scanButtonText, { color: COLORS.text }]}>
-                Escanear
-              </Text>
+        <View style={styles.header}>
+          {searchOpen ? (
+            <TextInput
+              style={styles.searchInput}
+              value={searchQuery}
+              onChangeText={actions.setSearchQuery}
+              placeholder="Buscar por título, archivo o colección"
+              placeholderTextColor="rgba(255,255,255,0.35)"
+              autoFocus
+              returnKeyType="search"
+            />
+          ) : (
+            <View>
+              <Text style={styles.headerTitle}>InkTrick</Text>
+              <Text style={styles.headerSubtitle}>インクトリック</Text>
+            </View>
+          )}
+          <View style={styles.headerActions}>
+            <TouchableOpacity style={styles.circleBtn} onPress={toggleSearch} accessibilityLabel={searchOpen ? 'Cerrar búsqueda' : 'Buscar'}>
+              {searchOpen ? <CloseIcon size={16} color={COLORS.text} /> : <SearchIcon size={18} color={COLORS.text} />}
             </TouchableOpacity>
-            <TouchableOpacity
-              style={[
-                styles.scanButton,
-                {
-                  backgroundColor: COLORS.accent,
-                  opacity: (isScanning || !scannedFolders.some(f => f.enabled)) ? 0.6 : 1,
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: 6,
-                },
-              ]}
-              onPress={refreshLibrary}
-              disabled={isScanning || !scannedFolders.some(f => f.enabled)}
-            >
-              {isScanning ? (
-                <>
-                  <ActivityIndicator size="small" color="#0A0A0A" />
-                  <Text style={[styles.scanButtonText, { color: '#0A0A0A' }]}>
-                    Actualizando...
-                  </Text>
-                </>
-              ) : (
-                <>
-                  <RefreshIcon size={16} color="#0A0A0A" />
-                  <Text style={[styles.scanButtonText, { color: '#0A0A0A' }]}>
-                    Actualizar
-                  </Text>
-                </>
-              )}
-            </TouchableOpacity>
+            {!searchOpen && (
+              <>
+                <TouchableOpacity style={styles.circleBtn} onPress={() => navigation.navigate('Stats')} accessibilityLabel="Mi lectura">
+                  <ChartIcon size={18} color={COLORS.text} />
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.circleBtn} onPress={() => setFoldersModalVisible(true)} accessibilityLabel="Carpetas">
+                  <FolderIcon size={17} color={COLORS.text} />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.circleBtn, styles.circleBtnPrimary, (isScanning || !scannedFolders.some(f => f.enabled)) && { opacity: 0.5 }]}
+                  onPress={() => actions.refreshLibrary()}
+                  disabled={isScanning || !scannedFolders.some(f => f.enabled)}
+                  accessibilityLabel="Actualizar biblioteca"
+                >
+                  {isScanning ? <ActivityIndicator size="small" color="#0A0A0A" /> : <RefreshIcon size={17} color="#0A0A0A" />}
+                </TouchableOpacity>
+              </>
+            )}
           </View>
         </View>
       )}
 
-      {/* Cuerpo principal */}
-      {isScanning ? (
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={COLORS.accent} />
-          <Text style={[styles.loadingText, { color: COLORS.text }]}>
-            Indexando carpeta seleccionada...
-          </Text>
+      {isScanning && (
+        <View style={styles.scanBanner}>
+          <ActivityIndicator size="small" color={COLORS.accent} />
+          <Text style={styles.scanBannerText}>Buscando libros en tus carpetas...</Text>
         </View>
-      ) : activeDetailSection === null ? (
-        /* VISTA DE INICIO (Home con Carruseles) */
-        <ScrollView 
-          contentContainerStyle={styles.homeScrollContent}
-          showsVerticalScrollIndicator={false}
-        >
-          {/* Sección Reciente... (Split Layout con Portada Grande y Datos del Libro) */}
-          {recentBooks.length > 0 && (
-            <View style={styles.recentSectionContainer}>
-              <View style={styles.sectionHeaderRow}>
-                <Text style={[styles.sectionTitle, { color: COLORS.text }]}>Reciente...</Text>
-                <TouchableOpacity onPress={() => setActiveDetailSection('recent')}>
-                  <Text style={[styles.sectionMoreLink, { color: COLORS.accent }]}>Ver todo →</Text>
-                </TouchableOpacity>
-              </View>
-              
-              <TouchableOpacity
-                style={styles.recentSplitCard}
-                onPress={() => handleBookPress(recentBooks[0])}
-                onLongPress={() => handleBookLongPress(recentBooks[0])}
-                activeOpacity={0.8}
-              >
-                {/* Columna Izquierda: Portada Grande */}
-                <View style={styles.recentLeftColumn}>
-                  {recentBooks[0].coverUri ? (
-                    <Image
-                      source={{ uri: recentBooks[0].coverUri }}
-                      style={styles.recentCoverImage}
-                      resizeMode="cover"
-                    />
-                  ) : (
-                    <View style={styles.recentFormatPlaceholder}>
-                      <Text style={[styles.recentFormatBadge, { color: '#FFFFFF' }]}>PDF</Text>
-                    </View>
-                  )}
+      )}
 
-                  {/* Barra de progreso de lectura en la portada */}
-                  {(() => {
-                    const bookProgress = progress[recentBooks[0].id];
-                    const percentage = bookProgress ? Math.round(bookProgress.percentage) : 0;
-                    if (percentage === 100) {
-                      return (
-                        <View style={styles.readBanner}>
-                          <Text style={styles.readBannerText}>LEÍDO</Text>
-                        </View>
-                      );
-                    } else if (percentage > 0) {
-                      return (
-                        <View style={styles.recentCoverProgressOverlay}>
-                          <View style={styles.recentCoverProgressBarBackground}>
-                            <View style={[styles.recentCoverProgressBar, { width: `${percentage}%` }]} />
-                          </View>
-                          <Text style={styles.recentCoverProgressText}>{percentage}%</Text>
-                        </View>
-                      );
-                    }
-                    return null;
-                  })()}
+      {/* Body */}
+      {section === null && !isSearching ? (
+        <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + 40 }} showsVerticalScrollIndicator={false}>
+          {renderHero()}
+          {favoriteBooks.length > 0 && renderCarousel('favorites', 'Favoritos', favoriteBooks, false, <StarIcon size={19} color={COLORS.sakura} filled />)}
+          {collections.map(c => renderCarousel(c.name, c.name, c.books, c.name !== UNSORTED))}
 
-                  {/* Banda inferior flotante "Abriendo..." en la portada reciente del lobby */}
-                  {preparingBookId === recentBooks[0].id && (
-                    <View style={styles.cardLoadingOverlay}>
-                      <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 6 }} />
-                      <Text style={styles.cardLoadingText}>Abriendo...</Text>
-                    </View>
-                  )}
-                </View>
-
-                {/* Columna Derecha: Detalles del libro */}
-                <View style={styles.recentRightColumn}>
-                  <Text style={[styles.recentBookTitle, { color: COLORS.text }]} numberOfLines={2}>
-                    {recentBooks[0].title}
-                  </Text>
-                  
-                  {/* Páginas y porcentaje */}
-                  {(() => {
-                    const bookProgress = progress[recentBooks[0].id];
-                    if (bookProgress) {
-                      const pct = Math.round(bookProgress.percentage);
-                      if (pct === 100) {
-                        return (
-                          <Text style={styles.recentProgressMeta}>
-                            Lectura finalizada
-                          </Text>
-                        );
-                      }
-                      return (
-                        <Text style={styles.recentProgressMeta}>
-                          Página {bookProgress.currentPage + 1} de {bookProgress.totalPages} ({pct}%)
-                        </Text>
-                      );
-                    }
-                    return (
-                      <Text style={styles.recentProgressMeta}>
-                        Sin comenzar a leer
-                      </Text>
-                    );
-                  })()}
-
-                  {/* Información del archivo */}
-                  <Text style={styles.recentFileMeta}>
-                    {recentBooks[0].format.toUpperCase()} · {(recentBooks[0].fileSize / (1024 * 1024)).toFixed(1)} MB
-                  </Text>
-
-                  {/* Autor y Descripción */}
-                  <Text style={styles.recentLabel}>Autor:</Text>
-                  <Text style={styles.recentValue} numberOfLines={1}>
-                    Manga local / No especificado
-                  </Text>
-
-                  <Text style={styles.recentLabel}>Descripción:</Text>
-                  <Text style={styles.recentDescription} numberOfLines={3}>
-                    Continúa la lectura de tu manga justo donde la dejaste. Toca la portada para abrir el lector.
-                  </Text>
-                </View>
+          {activeBooks.length === 0 && (
+            <View style={styles.empty}>
+              <FolderIcon size={56} color="rgba(255,255,255,0.35)" />
+              <Text style={styles.emptyTitle}>{books.length === 0 ? 'Tu biblioteca está vacía' : 'No hay carpetas activas'}</Text>
+              <Text style={styles.emptyText}>
+                {books.length === 0
+                  ? 'Elige la carpeta donde guardas tus mangas, cómics o PDFs (CBR, CBZ o PDF). InkTrick los encuentra solo, incluso en subcarpetas.'
+                  : 'Activa al menos una carpeta en el gestor de carpetas para ver tus libros.'}
+              </Text>
+              <TouchableOpacity style={[styles.primaryBtn, { marginTop: 8 }]} onPress={() => setFoldersModalVisible(true)}>
+                <FolderIcon size={16} color="#0A0A0A" />
+                <Text style={styles.primaryBtnText}>{books.length === 0 ? 'Agregar carpeta' : 'Gestionar carpetas'}</Text>
               </TouchableOpacity>
-            </View>
-          )}
-
-          {favoriteBooks.length > 0 && renderCarouselSection('favorites', '★ Favoritos', favoriteBooks)}
-          
-          {/* Listado de Colecciones (Carpetas) */}
-          {foldersList.map(folder => 
-            renderCarouselSection(folder.name, `⊞ ${folder.name}`, folder.books)
-          )}
-
-          {books.length === 0 && (
-            <View style={styles.emptyContainer}>
-              <Text style={styles.emptyIcon}>⊞</Text>
-              <Text style={[styles.emptyTitle, { color: COLORS.text }]}>
-                Biblioteca vacía
-              </Text>
-              <Text style={[styles.emptySubtitle, { color: COLORS.text + '80' }]}>
-                Presiona "Escanear" para seleccionar las carpetas donde tienes guardados tus archivos PDF.
-              </Text>
             </View>
           )}
         </ScrollView>
       ) : (
-        /* VISTA DE DETALLE (Grid completo de una Sección o Carpeta) */
         <View style={{ flex: 1 }}>
-          <View style={[styles.folderSubheader, { borderBottomColor: COLORS.border }]}>
-            <TouchableOpacity
-              style={[styles.backButton, { borderColor: COLORS.border, backgroundColor: COLORS.surface }]}
-              onPress={() => setActiveDetailSection(null)}
-              activeOpacity={0.7}
-            >
-              <Text style={[styles.backButtonText, { color: COLORS.text }]}>
-                Volver
-              </Text>
-            </TouchableOpacity>
-            <Text style={[styles.folderSubheaderTitle, { color: COLORS.text }]} numberOfLines={1}>
-              {activeDetailSection === 'recent' 
-                ? 'Historial de lectura' 
-                : activeDetailSection === 'favorites' 
-                ? 'Favoritos' 
-                : `Colección: ${activeDetailSection}`}
-            </Text>
-          </View>
-
-          {displayBooks.length === 0 ? (
-            <View style={styles.emptyContainer}>
-              <Text style={styles.emptyIcon}>⊞</Text>
-              <Text style={[styles.emptyTitle, { color: COLORS.text }]}>
-                Colección vacía
-              </Text>
+          {!isSearching && (
+            <View style={styles.subheader}>
+              <TouchableOpacity style={styles.textBtn} onPress={() => setSection(null)}>
+                <BackIcon size={15} color={COLORS.text} />
+                <Text style={styles.textBtnLabel}>Inicio</Text>
+              </TouchableOpacity>
+              <Text style={styles.subheaderTitle} numberOfLines={1}>{gridTitle}</Text>
+              {reorderIds ? (
+                <>
+                  <TouchableOpacity style={styles.textBtn} onPress={resetReorder}>
+                    <Text style={styles.textBtnLabel}>Por nombre</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.textBtn} onPress={() => setReorderIds(null)}>
+                    <Text style={styles.textBtnLabel}>Cancelar</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[styles.textBtn, styles.textBtnPrimary]} onPress={saveReorder}>
+                    <Text style={[styles.textBtnLabel, { color: '#0A0A0A' }]}>Listo</Text>
+                  </TouchableOpacity>
+                </>
+              ) : (
+                <>
+                  {canReorder && !selectionMode && (
+                    <TouchableOpacity style={styles.textBtn} onPress={startReorder} accessibilityLabel="Ordenar colección">
+                      <SortIcon size={16} color={COLORS.text} />
+                      <Text style={styles.textBtnLabel}>Ordenar</Text>
+                    </TouchableOpacity>
+                  )}
+                  <View style={styles.countPill}>
+                    <Text style={styles.countPillText}>{gridBooks.length}</Text>
+                  </View>
+                </>
+              )}
             </View>
+          )}
+          {reorderIds && (
+            <Text style={styles.reorderHint}>
+              Mantén presionado un libro y arrástralo, o usa las flechas, para definir el orden de lectura. El botón «Siguiente» al terminar un tomo sigue este orden.
+            </Text>
+          )}
+          {isSearching && <Text style={styles.searchResultsLabel}>{gridTitle}</Text>}
+          {gridBooks.length === 0 ? (
+            <View style={styles.empty}>
+              <Text style={styles.emptyTitle}>{isSearching ? 'Sin resultados' : 'Colección vacía'}</Text>
+            </View>
+          ) : reorderIds ? (
+            <GHScrollView contentContainerStyle={{ padding: H_PADDING, paddingBottom: insets.bottom + 40 }}>
+              <ReorderGrid
+                books={gridBooks}
+                columns={numColumns}
+                cardWidth={gridCardWidth}
+                gap={GRID_GAP}
+                renderCard={book => renderCard(book, gridCardWidth, true)}
+                onMove={moveBook}
+              />
+            </GHScrollView>
           ) : (
             <FlatList
-              data={displayBooks}
-              renderItem={({ item }) => renderBookItem(item, false)}
-              keyExtractor={item => item.id}
+              key={`grid_${numColumns}`}
+              data={gridBooks}
               numColumns={numColumns}
-              key={`books_${numColumns}`}
-              contentContainerStyle={[
-                styles.listContent,
-                { paddingBottom: 40 },
-              ]}
-              columnWrapperStyle={numColumns > 1 ? styles.row : undefined}
-              showsVerticalScrollIndicator={false}
-              initialNumToRender={8}
-              maxToRenderPerBatch={10}
+              keyExtractor={item => item.id}
+              renderItem={({ item }) => renderCard(item, gridCardWidth, inCollectionGrid)}
+              extraData={[selectionMode, selectedIds, progress, titleMaps]}
+              columnWrapperStyle={{ gap: GRID_GAP }}
+              contentContainerStyle={{ padding: H_PADDING, gap: GRID_GAP, paddingBottom: insets.bottom + 40 }}
+              initialNumToRender={numColumns * 3}
+              maxToRenderPerBatch={numColumns * 2}
               windowSize={7}
-              removeClippedSubviews={Platform.OS === 'android'}
+              removeClippedSubviews
+              keyboardShouldPersistTaps="handled"
             />
           )}
         </View>
       )}
 
-      {/* Menú desplegable de opciones (3 puntos) */}
-      <Modal
-        animationType="fade"
-        transparent={true}
-        visible={isOptionsMenuVisible}
-        onRequestClose={() => setIsOptionsMenuVisible(false)}
-      >
-        <TouchableOpacity
-          style={styles.optionsModalBackdrop}
-          activeOpacity={1}
-          onPress={() => setIsOptionsMenuVisible(false)}
-        >
-          <View style={[styles.optionsMenuCard, { backgroundColor: COLORS.surface, borderColor: COLORS.border }]}>
-            <TouchableOpacity
-              style={[styles.optionsMenuItem, { borderBottomColor: COLORS.border + '60' }]}
-              onPress={handleToggleFavoriteBatch}
-              activeOpacity={0.7}
-            >
-              <View style={{ width: 28, alignItems: 'center', justifyContent: 'center' }}>
-                <StarIcon size={19} color={COLORS.text} />
-              </View>
-              <Text style={[styles.optionsMenuItemText, { color: COLORS.text }]}>
-                Favorito
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.optionsMenuItem, { borderBottomColor: COLORS.border + '60' }]}
-              onPress={handleMarkAsReadBatch}
-              activeOpacity={0.7}
-            >
-              <View style={{ width: 28, alignItems: 'center', justifyContent: 'center' }}>
-                <CheckDoneIcon size={20} color={COLORS.text} />
-              </View>
-              <Text style={[styles.optionsMenuItemText, { color: COLORS.text }]}>
-                Marcar como leído
-              </Text>
-            </TouchableOpacity>
-
-            {selectedBookIds.length === 1 && (
-              <TouchableOpacity
-                style={[styles.optionsMenuItem, { borderBottomColor: COLORS.border + '60' }]}
-                onPress={handleOpenCoverModal}
-                activeOpacity={0.7}
-              >
-                <View style={{ width: 28, alignItems: 'center', justifyContent: 'center' }}>
-                  <ImageIcon size={19} color={COLORS.text} />
-                </View>
-                <Text style={[styles.optionsMenuItemText, { color: COLORS.text }]}>
-                  Cambiar portada
-                </Text>
-              </TouchableOpacity>
-            )}
-
-            <TouchableOpacity
-              style={[styles.optionsMenuItem, { borderBottomColor: COLORS.border + '60' }]}
-              onPress={() => {
-                setIsOptionsMenuVisible(false);
-                setIsFolderModalVisible(true);
-              }}
-              activeOpacity={0.7}
-            >
-              <View style={{ width: 28, alignItems: 'center', justifyContent: 'center' }}>
-                <FolderIcon size={19} color={COLORS.text} />
-              </View>
-              <Text style={[styles.optionsMenuItemText, { color: COLORS.text }]}>
-                Agrupar
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.optionsMenuItem, { borderBottomWidth: 0 }]}
-              onPress={handleDeleteBatch}
-              activeOpacity={0.7}
-            >
-              <View style={{ width: 28, alignItems: 'center', justifyContent: 'center' }}>
-                <TrashIcon size={19} color="#FF4D4D" />
-              </View>
-              <Text style={[styles.optionsMenuItemText, { color: '#FF4D4D' }]}>
-                Eliminar
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </TouchableOpacity>
-      </Modal>
-
-      {/* Modal para Cambiar Portada */}
-      <Modal
-        animationType="fade"
-        transparent={true}
-        visible={isCoverModalVisible}
-        onRequestClose={() => {
-          if (!isCoverLoading) setIsCoverModalVisible(false);
-        }}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, { backgroundColor: COLORS.surface, borderColor: COLORS.border }]}>
-            <Text style={[styles.modalTitle, { color: COLORS.text }]}>
-              Cambiar Portada
-            </Text>
-            <Text style={[styles.modalSubtitle, { color: COLORS.text + '80' }]}>
-              Ingresa el número de página que deseas utilizar como portada para este libro:
-            </Text>
-
-            {/* Vista previa de la portada actual */}
-            {coverPreviewUri ? (
-              <View style={styles.coverPreviewContainer}>
-                <Image
-                  source={{ uri: coverPreviewUri }}
-                  style={styles.coverPreviewImage}
-                  resizeMode="cover"
-                />
-              </View>
-            ) : null}
-
-            <View style={{ width: '100%', marginBottom: 8 }}>
-              <Text style={[styles.modalSectionLabel, { color: COLORS.text + '70', fontSize: 12, fontWeight: '700', marginBottom: 6, textTransform: 'uppercase' }]}>
-                Número de página:
-              </Text>
-              <TextInput
-                style={[styles.modalInput, { color: COLORS.text, borderColor: COLORS.border, backgroundColor: COLORS.background, textAlign: 'center', fontSize: 18, fontWeight: '700' }]}
-                value={coverPageInput}
-                onChangeText={setCoverPageInput}
-                placeholder="1"
-                placeholderTextColor={COLORS.text + '40'}
-                keyboardType="numeric"
-                editable={!isCoverLoading}
-              />
-            </View>
-
-            <View style={styles.modalButtons}>
-              <TouchableOpacity
-                style={[styles.modalButton, styles.modalCancelButton]}
-                disabled={isCoverLoading}
-                onPress={() => setIsCoverModalVisible(false)}
-              >
-                <Text style={[styles.modalButtonText, { color: COLORS.text }]}>
-                  Cancelar
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[
-                  styles.modalButton,
-                  styles.modalConfirmButton,
-                  { backgroundColor: COLORS.accent, opacity: isCoverLoading ? 0.6 : 1 },
-                ]}
-                disabled={isCoverLoading}
-                onPress={handleSaveCover}
-              >
-                {isCoverLoading ? (
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <ActivityIndicator size="small" color="#0A0A0A" />
-                    <Text style={[styles.modalButtonText, { color: '#0A0A0A' }]}>
-                      Generando...
-                    </Text>
-                  </View>
-                ) : (
-                  <Text style={[styles.modalButtonText, { color: '#0A0A0A' }]}>
-                    Guardar
-                  </Text>
-                )}
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      {/* Modal para agrupar libros en colecciones/carpetas */}
-      <Modal
-        animationType="fade"
-        transparent={true}
-        visible={isFolderModalVisible}
-        onRequestClose={() => setIsFolderModalVisible(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, { backgroundColor: COLORS.surface, borderColor: COLORS.border }]}>
-            <Text style={[styles.modalTitle, { color: COLORS.text }]}>
-              Agrupar en Colección
-            </Text>
-            <Text style={[styles.modalSubtitle, { color: COLORS.text + '80' }]}>
-              Ingresa el nombre de la colección para clasificar los libros seleccionados:
-            </Text>
-            <TextInput
-              style={[styles.modalInput, { color: COLORS.text, borderColor: COLORS.border, backgroundColor: COLORS.background }]}
-              value={newFolderName}
-              onChangeText={setNewFolderName}
-              placeholder="Ej: Shonen, Seinen, Josei"
-              placeholderTextColor={COLORS.text + '40'}
-              autoFocus={true}
+      {/* Batch actions menu: labels reflect what each action will do to the current selection. */}
+      <Modal animationType="fade" transparent visible={optionsVisible} onRequestClose={() => setOptionsVisible(false)}>
+        <Pressable style={[styles.menuBackdrop, { paddingTop: insets.top + 70 }]} onPress={() => setOptionsVisible(false)}>
+          <View style={styles.menuCard}>
+            <MenuItem
+              icon={<StarIcon size={18} color={COLORS.text} />}
+              label={allSelectedFavorite ? 'Quitar de favoritos' : 'Agregar a favoritos'}
+              onPress={() => runBatch(actions.toggleFavoriteBatch)}
             />
+            {!allSelectedRead && (
+              <MenuItem icon={<CheckDoneIcon size={19} color={COLORS.text} />} label="Marcar como leído" onPress={() => runBatch(actions.markAsReadBatch)} />
+            )}
+            {anySelectedStarted && (
+              <MenuItem icon={<RefreshIcon size={18} color={COLORS.text} />} label="Marcar como no leído" onPress={() => runBatch(actions.markAsUnreadBatch)} />
+            )}
+            {selectedBook && <MenuItem icon={<ImageIcon size={18} color={COLORS.text} />} label="Cambiar portada" onPress={openCoverModal} />}
+            <MenuItem
+              icon={<FolderIcon size={18} color={COLORS.text} />}
+              label="Mover a colección"
+              onPress={() => {
+                setOptionsVisible(false);
+                setGroupModalVisible(true);
+              }}
+            />
+            <MenuItem icon={<TrashIcon size={18} color="#FF5A5A" />} label="Quitar de la biblioteca" danger last onPress={confirmDelete} />
+          </View>
+        </Pressable>
+      </Modal>
 
-            {/* Colecciones existentes para asignación rápida */}
-            {(() => {
-              const existingFolders = foldersList.filter(f => f.name !== 'Sin clasificar');
-              if (existingFolders.length === 0) return null;
-              return (
-                <View style={{ marginTop: 16, width: '100%' }}>
-                  <Text style={[styles.modalSectionLabel, { color: COLORS.text + '70', fontSize: 12, fontWeight: '700', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }]}>
-                    O agrúpalos en una existente:
-                  </Text>
-                  <ScrollView
-                    horizontal
-                    showsHorizontalScrollIndicator={false}
-                    contentContainerStyle={styles.existingFoldersPillsContainer}
-                  >
-                    {existingFolders.map(folder => (
-                      <TouchableOpacity
-                        key={folder.name}
-                        style={[styles.existingFolderPill, { backgroundColor: COLORS.background, borderColor: COLORS.border, borderWidth: 1 }]}
-                        onPress={() => handleAssignToExistingFolder(folder.name)}
-                        activeOpacity={0.7}
-                      >
-                        <Text style={[styles.existingFolderPillText, { color: COLORS.text }]}>
-                          ⊞ {folder.name}
-                        </Text>
+      {/* Change cover */}
+      <Modal animationType="fade" transparent visible={coverModalVisible} onRequestClose={() => !coverLoading && setCoverModalVisible(false)}>
+        <Pressable style={styles.modalOverlay} onPress={() => !coverLoading && setCoverModalVisible(false)}>
+          <Pressable style={styles.modalCard}>
+            <ModalHeader title="Cambiar portada" onClose={() => !coverLoading && setCoverModalVisible(false)} />
+            <Text style={styles.modalText}>
+              Número de página a usar como portada{selectedBook?.pageCount ? ` (1 - ${selectedBook.pageCount})` : ''}:
+            </Text>
+            {selectedBook?.coverUri ? (
+              <Image cachePolicy="memory" source={{ uri: selectedBook.coverUri }} style={styles.coverPreview} contentFit="cover" />
+            ) : null}
+            <TextInput
+              style={[styles.modalInput, styles.modalInputCenter]}
+              value={coverPageInput}
+              onChangeText={setCoverPageInput}
+              keyboardType="number-pad"
+              editable={!coverLoading}
+              selectTextOnFocus
+            />
+            <View style={styles.modalButtons}>
+              <TouchableOpacity style={styles.modalCancel} disabled={coverLoading} onPress={() => setCoverModalVisible(false)}>
+                <Text style={styles.modalCancelText}>Cancelar</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.modalConfirm, coverLoading && { opacity: 0.6 }]} disabled={coverLoading} onPress={saveCover}>
+                {coverLoading ? <ActivityIndicator size="small" color="#0A0A0A" /> : <Text style={styles.modalConfirmText}>Guardar</Text>}
+              </TouchableOpacity>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Move to collection */}
+      <Modal animationType="fade" transparent visible={groupModalVisible} onRequestClose={closeGroupModal}>
+        <Pressable style={styles.modalOverlay} onPress={closeGroupModal}>
+          <Pressable style={styles.modalCard}>
+            <ModalHeader title="Mover a colección" onClose={closeGroupModal} />
+            <Text style={styles.modalText}>Escribe una colección nueva o elige una existente:</Text>
+            <TextInput
+              style={styles.modalInput}
+              value={newGroupName}
+              onChangeText={setNewGroupName}
+              placeholder="Ej: Shonen, Seinen, Manhwas"
+              placeholderTextColor="rgba(255,255,255,0.3)"
+              autoFocus
+              onSubmitEditing={() => newGroupName.trim() && assignGroup(newGroupName)}
+            />
+            {collections.filter(c => c.name !== UNSORTED).length > 0 && (
+              <>
+                <Text style={styles.modalLabel}>Colecciones existentes</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.pills}>
+                  {collections
+                    .filter(c => c.name !== UNSORTED)
+                    .map(c => (
+                      <TouchableOpacity key={c.name} style={styles.pill} onPress={() => assignGroup(c.name)}>
+                        <Text style={styles.pillText}>{c.name}</Text>
                       </TouchableOpacity>
                     ))}
-                  </ScrollView>
-                </View>
-              );
-            })()}
-
+                </ScrollView>
+              </>
+            )}
             <View style={styles.modalButtons}>
-              <TouchableOpacity
-                style={[styles.modalButton, styles.modalCancelButton]}
-                onPress={() => {
-                  setNewFolderName('');
-                  setIsFolderModalVisible(false);
-                }}
-              >
-                <Text style={[styles.modalButtonText, { color: COLORS.text }]}>
-                  Cancelar
-                </Text>
+              {selectedBooks.some(b => b.folder) && (
+                <TouchableOpacity style={styles.modalCancel} onPress={() => assignGroup('')}>
+                  <Text style={styles.modalDangerText}>Sacar de su colección</Text>
+                </TouchableOpacity>
+              )}
+              <View style={{ flex: 1 }} />
+              <TouchableOpacity style={styles.modalCancel} onPress={closeGroupModal}>
+                <Text style={styles.modalCancelText}>Cancelar</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.modalButton, styles.modalConfirmButton, { backgroundColor: COLORS.accent }]}
-                onPress={handleAssignFolderBatch}
+                style={[styles.modalConfirm, !newGroupName.trim() && { opacity: 0.5 }]}
+                disabled={!newGroupName.trim()}
+                onPress={() => assignGroup(newGroupName)}
               >
-                <Text style={[styles.modalButtonText, { color: '#0A0A0A' }]}>
-                  Confirmar
-                </Text>
+                <Text style={styles.modalConfirmText}>Mover</Text>
               </TouchableOpacity>
             </View>
-          </View>
-        </View>
+          </Pressable>
+        </Pressable>
       </Modal>
 
-      {/* Modal de Gestor de Carpetas (Escanear) */}
-      <Modal
-        animationType="fade"
-        transparent={true}
-        visible={isFoldersModalVisible}
-        onRequestClose={() => setIsFoldersModalVisible(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={[styles.foldersModalContent, { backgroundColor: COLORS.surface, borderColor: COLORS.border }]}>
-            <View style={styles.foldersModalHeader}>
-              <Text style={[styles.modalTitle, { color: COLORS.text, marginBottom: 0 }]}>
-                Gestor de Carpetas
-              </Text>
-              <TouchableOpacity
-                onPress={() => setIsFoldersModalVisible(false)}
-                style={styles.foldersCloseButton}
-              >
-                <CloseIcon size={20} color={COLORS.text} />
-              </TouchableOpacity>
-            </View>
-            <Text style={[styles.modalSubtitle, { color: COLORS.text + '80', marginTop: 4, marginBottom: 16 }]}>
-              Selecciona las carpetas activas de las que deseas importar mangas a tu biblioteca:
-            </Text>
+      {/* Folder manager */}
+      <Modal animationType="fade" transparent visible={foldersModalVisible} onRequestClose={() => setFoldersModalVisible(false)}>
+        <Pressable style={styles.modalOverlay} onPress={() => setFoldersModalVisible(false)}>
+          <Pressable style={[styles.modalCard, { maxHeight: '85%' }]}>
+            <ModalHeader title="Carpetas" onClose={() => setFoldersModalVisible(false)} />
+            <Text style={styles.modalText}>InkTrick busca CBR, CBZ y PDF en estas carpetas y sus subcarpetas.</Text>
 
-            {isScanning && (
-              <View style={styles.modalScanningBanner}>
-                <ActivityIndicator size="small" color={COLORS.accent} style={{ marginRight: 10 }} />
-                <Text style={[styles.modalScanningText, { color: COLORS.text }]}>
-                  Escaneando e indexando mangas...
-                </Text>
-              </View>
-            )}
-
-            {scannedFolders.length === 0 && !isScanning ? (
-              <View style={styles.foldersEmptyContainer}>
-                <FolderIcon size={38} color={COLORS.text + '50'} />
-                <Text style={[styles.foldersEmptyText, { color: COLORS.text, marginTop: 8 }]}>
-                  No hay carpetas agregadas
-                </Text>
+            {scannedFolders.length === 0 ? (
+              <View style={styles.foldersEmpty}>
+                <FolderIcon size={36} color="rgba(255,255,255,0.35)" />
+                <Text style={styles.modalText}>No hay carpetas agregadas</Text>
               </View>
             ) : (
-              <ScrollView style={styles.foldersListContainer} showsVerticalScrollIndicator={true}>
-                {scannedFolders.map(folder => (
-                  <View
-                    key={folder.uri}
-                    style={[styles.folderRowItem, { borderBottomColor: COLORS.border + '30' }]}
-                  >
-                    <TouchableOpacity
-                      style={styles.folderRowClickable}
-                      onPress={() => toggleFolder(folder.uri)}
-                      activeOpacity={0.7}
-                    >
-                      <View
-                        style={[
-                          styles.checkboxSquare,
-                          {
-                            backgroundColor: folder.enabled ? COLORS.accent : 'transparent',
-                            borderColor: folder.enabled ? COLORS.accent : COLORS.border,
-                          },
-                        ]}
-                      >
-                        {folder.enabled && <Text style={{ color: '#0A0A0A', fontSize: 12, fontWeight: '900' }}>✓</Text>}
-                      </View>
-                      <View style={{ flex: 1, marginLeft: 12 }}>
-                        <Text style={[styles.folderRowName, { color: COLORS.text }]} numberOfLines={1}>
-                          {folder.name.replace(/^primary:/i, '')}
-                        </Text>
-                      </View>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      onPress={() => {
-                        Alert.alert(
-                          'Eliminar carpeta',
-                          `¿Estás seguro de que deseas eliminar la carpeta "${folder.name}" y todos sus mangas de la biblioteca?`,
-                          [
+              <ScrollView style={styles.folderList}>
+                {scannedFolders.map((folder, index) => {
+                  const count = books.filter(b => belongsToFolder(b, folder.uri)).length;
+                  return (
+                    <View key={folder.uri} style={[styles.folderRow, index > 0 && styles.folderRowDivider]}>
+                      <TouchableOpacity style={styles.folderRowMain} onPress={() => actions.toggleFolder(folder.uri)}>
+                        <View style={[styles.checkboxSquare, folder.enabled && styles.checkboxSquareOn]}>
+                          {folder.enabled && <Text style={styles.checkboxSquareMark}>✓</Text>}
+                        </View>
+                        <View style={{ flex: 1, marginLeft: 12 }}>
+                          <Text style={styles.folderName} numberOfLines={1}>{folder.name}</Text>
+                          <Text style={styles.folderMeta}>{count} libros{folder.enabled ? '' : ' · oculta'}</Text>
+                        </View>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={{ padding: 8 }}
+                        onPress={() =>
+                          Alert.alert('Quitar carpeta', `¿Quitar "${folder.name}" y sus libros de la biblioteca? Los archivos no se borran.`, [
                             { text: 'Cancelar', style: 'cancel' },
-                            {
-                              text: 'Eliminar',
-                              style: 'destructive',
-                              onPress: () => deleteFolder(folder.uri),
-                            },
-                          ]
-                        );
-                      }}
-                      style={styles.folderRowDelete}
-                    >
-                      <TrashIcon size={18} color={COLORS.text + '90'} />
-                    </TouchableOpacity>
-                  </View>
-                ))}
+                            { text: 'Quitar', style: 'destructive', onPress: () => actions.deleteFolder(folder.uri) },
+                          ])
+                        }
+                      >
+                        <TrashIcon size={18} color="rgba(255,255,255,0.6)" />
+                      </TouchableOpacity>
+                    </View>
+                  );
+                })}
               </ScrollView>
             )}
 
-            <View style={[styles.modalButtons, { marginTop: 16 }]}>
+            <View style={[styles.modalButtons, { marginTop: 18 }]}>
               <TouchableOpacity
-                style={[
-                  styles.foldersAddButton,
-                  {
-                    backgroundColor: COLORS.surface,
-                    borderColor: COLORS.border,
-                    borderWidth: 1,
-                    opacity: isScanning ? 0.6 : 1,
-                  },
-                ]}
+                style={[styles.outlineBtn, { flex: 1 }, isScanning && { opacity: 0.6 }]}
                 disabled={isScanning}
-                onPress={async () => {
-                  await addFolderAndIndex();
-                }}
+                onPress={actions.addFolderAndIndex}
               >
-                {isScanning ? (
-                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-                    <ActivityIndicator size="small" color={COLORS.accent} />
-                    <Text style={[styles.foldersAddButtonText, { color: COLORS.text }]}>
-                      Cargando...
-                    </Text>
-                  </View>
-                ) : (
-                  <Text style={[styles.foldersAddButtonText, { color: COLORS.text }]}>
-                    + Agregar carpeta
-                  </Text>
-                )}
+                {isScanning ? <ActivityIndicator size="small" color={COLORS.accent} /> : <Text style={styles.outlineBtnText}>+ Agregar carpeta</Text>}
               </TouchableOpacity>
-              <TouchableOpacity
-                style={[
-                  styles.modalButton,
-                  styles.modalConfirmButton,
-                  {
-                    backgroundColor: COLORS.accent,
-                    flex: 0.8,
-                    opacity: isScanning ? 0.5 : 1,
-                  },
-                ]}
-                disabled={isScanning}
-                onPress={() => setIsFoldersModalVisible(false)}
-              >
-                <Text style={[styles.modalButtonText, { color: '#0A0A0A' }]}>
-                  Listo
-                </Text>
+              <TouchableOpacity style={[styles.modalConfirm, { flex: 0.7 }]} onPress={() => setFoldersModalVisible(false)}>
+                <Text style={styles.modalConfirmText}>Listo</Text>
               </TouchableOpacity>
             </View>
-          </View>
-        </View>
-      </Modal>
-
-      {/* Modal HUD de Precarga 100% para Tomos Grandes */}
-      <Modal
-        animationType="fade"
-        transparent={true}
-        visible={!!preparingBookId && !!preloadProgress && preloadProgress.total > 1}
-      >
-        <View style={styles.preloadModalOverlay}>
-          <View style={[styles.preloadModalContent, { backgroundColor: COLORS.surface, borderColor: COLORS.border }]}>
-            <ActivityIndicator size="large" color={COLORS.accent} style={{ marginBottom: 14 }} />
-            <Text style={[styles.preloadModalTitle, { color: COLORS.text }]} numberOfLines={1}>
-              {preparingTitle}
-            </Text>
-            <Text style={[styles.preloadModalSubtitle, { color: COLORS.text + '80' }]}>
-              Optimizando páginas para lectura fluida a 60 FPS...
-            </Text>
-
-            <View style={styles.preloadProgressBarContainer}>
-              <View
-                style={[
-                  styles.preloadProgressBarFill,
-                  { backgroundColor: COLORS.accent, width: `${preloadProgress?.percentage || 0}%` },
-                ]}
-              />
-            </View>
-
-            <Text style={[styles.preloadProgressStats, { color: COLORS.text }]}>
-              {preloadProgress?.current || 0} de {preloadProgress?.total || 0} páginas ({preloadProgress?.percentage || 0}%)
-            </Text>
-          </View>
-        </View>
+          </Pressable>
+        </Pressable>
       </Modal>
     </View>
+  );
+}
+
+function SeeAll({ label }: { label: string }) {
+  return (
+    <View style={styles.seeAllRow}>
+      <Text style={styles.seeAll}>{label}</Text>
+      <ArrowIcon size={13} color="rgba(240,240,240,0.6)" />
+    </View>
+  );
+}
+
+function ModalHeader({ title, onClose }: { title: string; onClose: () => void }) {
+  return (
+    <View style={styles.modalHeaderRow}>
+      <Text style={styles.modalTitle}>{title}</Text>
+      <TouchableOpacity onPress={onClose} style={styles.modalClose} accessibilityLabel="Cerrar">
+        <CloseIcon size={18} color={COLORS.text} />
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+function MenuItem({ icon, label, onPress, danger, last }: {
+  icon: React.ReactNode;
+  label: string;
+  onPress: () => void;
+  danger?: boolean;
+  last?: boolean;
+}) {
+  return (
+    <TouchableOpacity style={[styles.menuItem, last && { borderBottomWidth: 0 }]} onPress={onPress} activeOpacity={0.7}>
+      <View style={styles.menuIcon}>{icon}</View>
+      <Text style={[styles.menuLabel, danger && { color: '#FF5A5A' }]}>{label}</Text>
+    </TouchableOpacity>
   );
 }
 
@@ -1251,767 +821,560 @@ export default function DashboardScreen({ navigation }: Props) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    backgroundColor: COLORS.background,
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingTop: 50,
-    paddingBottom: 16,
+    paddingHorizontal: H_PADDING,
+    paddingTop: 12,
+    paddingBottom: 12,
+    gap: 12,
+  },
+  headerSelection: {
+    backgroundColor: COLORS.surface,
     borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
   },
   headerTitle: {
+    color: COLORS.text,
     fontSize: 28,
-    fontWeight: '800',
-    letterSpacing: -0.5,
+    fontWeight: '900',
+    letterSpacing: -0.8,
   },
-  headerButtonsRow: {
+  headerSubtitle: {
+    color: 'rgba(240,240,240,0.4)',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 3,
+    marginTop: -2,
+  },
+  selectionTitle: {
+    color: COLORS.text,
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  headerActions: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 10,
   },
-  scanButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 12,
-  },
-  scanButtonText: {
-    color: '#FFFFFF',
-    fontWeight: '600',
-    fontSize: 14,
-  },
-  listContent: {
-    padding: 20,
-  },
-  row: {
-    gap: 12,
-    marginBottom: 12,
-  },
-  bookCard: {
-    borderRadius: 16,
+  searchInput: {
+    flex: 1,
+    height: 44,
+    borderRadius: 22,
+    paddingHorizontal: 18,
+    color: COLORS.text,
+    fontSize: 15,
+    backgroundColor: COLORS.surface,
     borderWidth: 1,
-    overflow: 'hidden',
-    position: 'relative',
+    borderColor: COLORS.border,
   },
-  coverContainer: {
-    height: 170,
-    width: '100%',
-    backgroundColor: '#1A1A1A',
-    overflow: 'hidden',
-    justifyContent: 'center',
+  circleBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.surface,
     alignItems: 'center',
-    position: 'relative',
-  },
-  coverImage: {
-    width: '100%',
-    height: '100%',
-  },
-  coverPdf: {
-    width: '100%',
-    height: '100%',
-    backgroundColor: '#1A1A1A',
-  },
-  formatPlaceholder: {
-    width: '100%',
-    height: '100%',
     justifyContent: 'center',
+  },
+  circleBtnPrimary: {
+    backgroundColor: COLORS.accent,
+    borderColor: COLORS.accent,
+  },
+  textBtn: {
+    flexDirection: 'row',
+    gap: 6,
+    paddingHorizontal: 14,
+    height: 40,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: COLORS.border,
     alignItems: 'center',
-    backgroundColor: 'rgba(231, 76, 60, 0.1)',
-  },
-  formatBadge: {
-    fontSize: 20,
-    fontWeight: '800',
-    letterSpacing: 1,
-  },
-  bookInfo: {
-    padding: 10,
-  },
-  bookTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    lineHeight: 16,
-  },
-  favoriteIndicator: {
-    position: 'absolute',
-    top: 8,
-    right: 8,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    borderRadius: 8,
-    padding: 2,
-  },
-  loadingContainer: {
-    flex: 1,
     justifyContent: 'center',
-    alignItems: 'center',
-    gap: 16,
   },
-  loadingText: {
-    fontSize: 16,
-    fontWeight: '500',
+  textBtnLabel: {
+    color: COLORS.text,
+    fontSize: 14,
+    fontWeight: '600',
   },
-  emptyContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 40,
-    paddingVertical: 80,
-    gap: 12,
-  },
-  emptyIcon: {
-    fontSize: 64,
-  },
-  emptyTitle: {
+  menuBtnText: {
+    color: COLORS.text,
     fontSize: 22,
+    fontWeight: '800',
+  },
+  outlineBtn: {
+    paddingHorizontal: 14,
+    height: 46,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.background,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  outlineBtnText: {
+    color: COLORS.text,
+    fontSize: 14,
     fontWeight: '700',
   },
-  emptySubtitle: {
-    fontSize: 14,
-    textAlign: 'center',
-    lineHeight: 20,
-  },
-  splashContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  splashContent: {
+  primaryBtn: {
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 8,
+    paddingHorizontal: 18,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: COLORS.accent,
   },
-  splashLogo: {
-    fontSize: 80,
-    marginBottom: 16,
-  },
-  splashTitle: {
-    fontSize: 36,
-    fontWeight: '900',
-    letterSpacing: -1,
-    marginBottom: 6,
-  },
-  splashSubtitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    letterSpacing: 0.5,
-    textTransform: 'uppercase',
-    marginBottom: 28,
-  },
-  progressBarOuter: {
-    width: 200,
-    height: 14,
-    borderRadius: 7,
-    borderWidth: 1,
-    overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-    elevation: 2,
-    borderTopColor: 'rgba(0, 0, 0, 0.4)',
-    borderLeftColor: 'rgba(0, 0, 0, 0.4)',
-    borderBottomColor: 'rgba(255, 255, 255, 0.2)',
-    borderRightColor: 'rgba(255, 255, 255, 0.2)',
-  },
-  progressBarInner: {
-    height: '100%',
-    borderRadius: 7,
-    borderTopWidth: 2,
-    borderTopColor: 'rgba(255, 255, 255, 0.4)',
-    borderBottomWidth: 2,
-    borderBottomColor: 'rgba(0, 0, 0, 0.25)',
-  },
-  cancelButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 8,
-    borderWidth: 1,
-  },
-  cancelButtonText: {
-    fontWeight: '600',
-    fontSize: 14,
-  },
-  checkboxContainer: {
-    position: 'absolute',
-    top: 10,
-    left: 10,
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    borderWidth: 2,
-    justifyContent: 'center',
-    alignItems: 'center',
-    zIndex: 10,
-  },
-  checkboxCheck: {
+  primaryBtnText: {
     color: '#0A0A0A',
     fontSize: 14,
+    fontWeight: '700',
+  },
+  scanBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: H_PADDING,
+    paddingVertical: 8,
+    backgroundColor: COLORS.surface,
+  },
+  scanBannerText: {
+    color: 'rgba(255,255,255,0.75)',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  heroHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: H_PADDING,
+    marginTop: 8,
+    marginBottom: 12,
+  },
+  heroHeaderTitle: {
+    color: COLORS.text,
+    fontSize: 19,
+    fontWeight: '800',
+    letterSpacing: -0.3,
+  },
+  hero: {
+    marginHorizontal: H_PADDING,
+    borderRadius: 24,
+    overflow: 'hidden',
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+  },
+  heroBody: {
+    flexDirection: 'row',
+    gap: 20,
+    padding: 18,
+  },
+  heroCover: {
+    aspectRatio: 0.7,
+    borderRadius: 14,
+    overflow: 'hidden',
+    backgroundColor: '#1A1A1A',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+    elevation: 14,
+  },
+  heroPlaceholder: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  heroPlaceholderText: {
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: 22,
     fontWeight: '900',
   },
-  selectionHeaderActions: {
+  heroInfo: {
+    flex: 1,
+    justifyContent: 'center',
+    gap: 6,
+  },
+  heroTitle: {
+    color: '#FFF',
+    fontSize: 22,
+    fontWeight: '900',
+    lineHeight: 27,
+    letterSpacing: -0.3,
+  },
+  heroSeries: {
+    color: 'rgba(240,240,240,0.65)',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  heroProgressRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 8,
+    maxWidth: 440,
+  },
+  heroTrack: {
+    flex: 1,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    overflow: 'hidden',
+  },
+  heroFill: {
+    height: '100%',
+    borderRadius: 3,
+    backgroundColor: '#FFFFFF',
+  },
+  heroPct: {
+    color: '#FFF',
+    fontSize: 13,
+    fontWeight: '800',
+    minWidth: 36,
+  },
+  heroStatus: {
+    color: '#FFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  heroMeta: {
+    color: 'rgba(255,255,255,0.5)',
+    fontSize: 12,
+  },
+  heroButton: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+    alignSelf: 'flex-start',
+    marginTop: 10,
+    paddingHorizontal: 22,
+    paddingVertical: 11,
+    borderRadius: 22,
+    backgroundColor: '#FFFFFF',
   },
-  moreMenuButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 8,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  moreMenuIcon: {
-    fontSize: 20,
-    fontWeight: '800',
-    lineHeight: 22,
-  },
-  optionsModalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.4)',
-    justifyContent: 'flex-start',
-    alignItems: 'flex-end',
-    paddingTop: 95,
-    paddingRight: 20,
-  },
-  optionsMenuCard: {
-    width: 210,
-    borderRadius: 16,
-    borderWidth: 1,
-    paddingVertical: 4,
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.35,
-    shadowRadius: 12,
-    elevation: 10,
-  },
-  optionsMenuItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-  },
-  optionsMenuItemIcon: {
-    fontSize: 16,
-    width: 20,
-    marginRight: 12,
-    textAlign: 'center',
-    color: COLORS.accent,
+  heroButtonText: {
+    color: '#0A0A0A',
+    fontSize: 14,
     fontWeight: '800',
   },
-  optionsMenuItemTrashContainer: {
-    width: 20,
-    alignItems: 'center',
-    marginRight: 12,
-  },
-  optionsMenuItemText: {
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-  },
-  modalContent: {
-    width: '100%',
-    maxWidth: 400,
-    borderRadius: 24,
-    borderWidth: 1,
-    padding: 24,
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.2,
-    shadowRadius: 12,
-    elevation: 10,
-  },
-  modalTitle: {
-    fontSize: 20,
-    fontWeight: '800',
-    marginBottom: 8,
-  },
-  modalSubtitle: {
-    fontSize: 14,
-    lineHeight: 20,
-    marginBottom: 20,
-  },
-  modalInput: {
-    height: 48,
-    borderRadius: 12,
-    borderWidth: 1,
-    paddingHorizontal: 16,
-    fontSize: 15,
-    marginBottom: 24,
-  },
-  modalButtons: {
-    flexDirection: 'row',
-    gap: 12,
-    justifyContent: 'flex-end',
-  },
-  modalButton: {
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  modalCancelButton: {
-    backgroundColor: 'transparent',
-  },
-  modalConfirmButton: {
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  modalButtonText: {
-    fontWeight: '700',
-    fontSize: 14,
-  },
-  folderSubheader: {
+  seeAllRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    gap: 16,
+    gap: 5,
   },
-  backButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 8,
-    borderWidth: 1,
-  },
-  backButtonText: {
+  seeAll: {
+    color: 'rgba(240,240,240,0.6)',
     fontSize: 12,
-    fontWeight: '600',
-  },
-  folderSubheaderTitle: {
-    fontSize: 16,
     fontWeight: '700',
-    flex: 1,
-  },
-  // Nuevos estilos para Carruseles horizontales
-  homeScrollContent: {
-    paddingBottom: 40,
   },
   carouselSection: {
-    marginTop: 20,
+    marginTop: 26,
   },
   carouselHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 20,
-    marginBottom: 10,
+    paddingHorizontal: H_PADDING,
+    marginBottom: 12,
+    gap: 12,
+  },
+  carouselTitleRow: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
   },
   carouselTitle: {
+    flexShrink: 1,
+    color: COLORS.text,
+    fontSize: 19,
+    fontWeight: '800',
+    letterSpacing: -0.3,
+  },
+  countPill: {
+    minWidth: 26,
+    paddingHorizontal: 8,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  countPillText: {
+    color: 'rgba(240,240,240,0.7)',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  carouselContent: {
+    paddingHorizontal: H_PADDING,
+  },
+  subheader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    paddingHorizontal: H_PADDING,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  textBtnPrimary: {
+    backgroundColor: COLORS.accent,
+    borderColor: COLORS.accent,
+  },
+  reorderHint: {
+    color: 'rgba(240,240,240,0.6)',
+    fontSize: 13,
+    paddingHorizontal: H_PADDING,
+    paddingTop: 12,
+  },
+  subheaderTitle: {
+    flex: 1,
+    color: COLORS.text,
     fontSize: 18,
     fontWeight: '800',
   },
-  carouselSeeAll: {
-    padding: 4,
-  },
-  carouselSeeAllText: {
+  searchResultsLabel: {
+    color: 'rgba(255,255,255,0.5)',
     fontSize: 12,
     fontWeight: '700',
+    paddingHorizontal: H_PADDING,
+    paddingTop: 14,
   },
-  carouselListContent: {
+  empty: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 40,
+    paddingVertical: 80,
+    gap: 12,
+  },
+  emptyTitle: {
+    color: COLORS.text,
+    fontSize: 20,
+    fontWeight: '800',
+  },
+  emptyText: {
+    color: 'rgba(240,240,240,0.55)',
+    fontSize: 14,
+    lineHeight: 20,
+    textAlign: 'center',
+    maxWidth: 460,
+  },
+  menuBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    alignItems: 'flex-end',
+    paddingRight: H_PADDING,
+  },
+  menuCard: {
+    width: 260,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.surface,
+    paddingVertical: 4,
+    elevation: 10,
+  },
+  menuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 13,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(42,42,42,0.6)',
+  },
+  menuIcon: {
+    width: 28,
+    alignItems: 'center',
+    marginRight: 10,
+  },
+  menuLabel: {
+    color: COLORS.text,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
     paddingHorizontal: 20,
   },
-  // Barra de progreso elegante sobre la portada
-  coverProgressOverlay: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.8)',
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  coverProgressBarBackground: {
-    flex: 1,
-    height: 4,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    borderRadius: 2,
-    marginRight: 6,
-  },
-  coverProgressBar: {
-    height: 4,
-    backgroundColor: COLORS.accent,
-    borderRadius: 2,
-  },
-  coverProgressText: {
-    fontSize: 9,
-    fontWeight: '800',
-    color: '#FFFFFF',
-  },
-  lobbyLoadingOverlay: {
-    position: 'absolute',
-    bottom: 24,
-    left: 20,
-    right: 20,
-    backgroundColor: 'rgba(26, 26, 46, 0.95)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 16,
-    padding: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.4,
-    shadowRadius: 12,
-    elevation: 10,
-    zIndex: 9999,
-  },
-  lobbyLoadingTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#FFFFFF',
-    marginBottom: 2,
-  },
-  lobbyLoadingSubtitle: {
-    fontSize: 11,
-    color: 'rgba(255, 255, 255, 0.5)',
-  },
-  cardLoadingOverlay: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: 'rgba(20, 20, 35, 0.92)',
-    paddingVertical: 8,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  cardLoadingText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  recentSectionContainer: {
-    marginHorizontal: 20,
-    marginTop: 20,
-    marginBottom: 12,
-  },
-  sectionHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 12,
-  },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-  },
-  sectionMoreLink: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  recentSplitCard: {
-    flexDirection: 'row',
-    borderRadius: 0,
-    overflow: 'hidden',
-    paddingVertical: 8,
-    paddingHorizontal: 0,
-  },
-  recentLeftColumn: {
-    width: '32%',
-    aspectRatio: 0.7,
-    borderRadius: 12,
-    overflow: 'hidden',
-    position: 'relative',
-    backgroundColor: '#1A1A1A',
-  },
-  recentCoverImage: {
+  modalCard: {
     width: '100%',
-    height: '100%',
-  },
-  recentFormatPlaceholder: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  recentFormatBadge: {
-    fontSize: 24,
-    fontWeight: '900',
-  },
-  recentCoverProgressOverlay: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.75)',
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  recentCoverProgressBarBackground: {
-    flex: 1,
-    height: 4,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    borderRadius: 2,
-    marginRight: 6,
-    overflow: 'hidden',
-  },
-  recentCoverProgressBar: {
-    height: '100%',
-    backgroundColor: COLORS.accent,
-  },
-  recentCoverProgressText: {
-    color: '#FFFFFF',
-    fontSize: 9,
-    fontWeight: '700',
-  },
-  recentRightColumn: {
-    flex: 1,
-    marginLeft: 14,
-    justifyContent: 'flex-start',
-    paddingTop: 2,
-  },
-  recentBookTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    marginBottom: 6,
-    lineHeight: 22,
-  },
-  recentProgressMeta: {
-    fontSize: 13,
-    color: '#FFFFFF',
-    fontWeight: '600',
-    marginBottom: 4,
-  },
-  recentFileMeta: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.5)',
-    marginBottom: 6,
-  },
-  recentLabel: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: COLORS.accent,
-    textTransform: 'uppercase',
-    marginTop: 2,
-  },
-  recentValue: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.8)',
-    marginBottom: 2,
-  },
-  recentDescription: {
-    fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.5)',
-    lineHeight: 16,
-  },
-  foldersModalContent: {
-    width: '100%',
-    maxWidth: 400,
+    maxWidth: 460,
     borderRadius: 24,
     borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.surface,
     padding: 24,
-    maxHeight: '80%',
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.2,
-    shadowRadius: 12,
     elevation: 10,
   },
-  foldersModalHeader: {
+  modalHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     marginBottom: 8,
   },
-  foldersCloseButton: {
-    padding: 4,
-  },
-  foldersEmptyContainer: {
+  modalClose: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 32,
+    backgroundColor: 'rgba(255,255,255,0.06)',
   },
-  foldersEmptyIcon: {
-    fontSize: 40,
-    marginBottom: 8,
-    opacity: 0.5,
+  modalTitle: {
+    color: COLORS.text,
+    fontSize: 20,
+    fontWeight: '800',
   },
-  foldersEmptyText: {
+  modalText: {
+    color: 'rgba(240,240,240,0.6)',
     fontSize: 14,
-    fontWeight: '600',
-    opacity: 0.5,
+    lineHeight: 20,
+    marginBottom: 16,
   },
-  foldersListContainer: {
-    maxHeight: 250,
+  modalLabel: {
+    color: 'rgba(240,240,240,0.5)',
+    fontSize: 11,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 8,
   },
-  folderRowItem: {
+  modalInput: {
+    height: 48,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.background,
+    color: COLORS.text,
+    paddingHorizontal: 16,
+    fontSize: 15,
+    marginBottom: 18,
+  },
+  modalInputCenter: {
+    textAlign: 'center',
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  modalButtons: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 12,
-    borderBottomWidth: 1,
+    gap: 10,
+    justifyContent: 'flex-end',
+    marginTop: 6,
   },
-  folderRowClickable: {
+  modalCancel: {
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 12,
+    justifyContent: 'center',
+  },
+  modalCancelText: {
+    color: COLORS.text,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  modalDangerText: {
+    color: '#FF7A7A',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  modalConfirm: {
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: COLORS.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 96,
+  },
+  modalConfirmText: {
+    color: '#0A0A0A',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  coverPreview: {
+    alignSelf: 'center',
+    width: 110,
+    height: 157,
+    borderRadius: 10,
+    marginBottom: 16,
+  },
+  pills: {
+    gap: 8,
+    paddingBottom: 16,
+  },
+  pill: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.background,
+  },
+  pillText: {
+    color: COLORS.text,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  foldersEmpty: {
+    alignItems: 'center',
+    paddingVertical: 20,
+    gap: 8,
+  },
+  folderList: {
+    maxHeight: 300,
+    borderRadius: 14,
+    backgroundColor: COLORS.background,
+    paddingHorizontal: 12,
+  },
+  folderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+  },
+  folderRowDivider: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(255,255,255,0.12)',
+  },
+  folderRowMain: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
   },
   checkboxSquare: {
-    width: 20,
-    height: 20,
-    borderRadius: 4,
+    width: 22,
+    height: 22,
+    borderRadius: 6,
     borderWidth: 1.5,
-    justifyContent: 'center',
+    borderColor: COLORS.border,
     alignItems: 'center',
+    justifyContent: 'center',
   },
-  checkboxCheckSymbol: {
+  checkboxSquareOn: {
+    backgroundColor: COLORS.accent,
+    borderColor: COLORS.accent,
+  },
+  checkboxSquareMark: {
     color: '#0A0A0A',
     fontSize: 12,
     fontWeight: '900',
   },
-  folderRowName: {
+  folderName: {
+    color: COLORS.text,
     fontSize: 14,
     fontWeight: '700',
   },
-  folderRowUri: {
-    fontSize: 11,
+  folderMeta: {
+    color: 'rgba(240,240,240,0.5)',
+    fontSize: 12,
     marginTop: 2,
-  },
-  folderRowDelete: {
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-  },
-  foldersAddButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderRadius: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
-    flex: 1.2,
-  },
-  foldersAddButtonText: {
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  modalScanningBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
-    borderColor: 'rgba(255, 255, 255, 0.15)',
-    borderWidth: 1,
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    marginBottom: 14,
-  },
-  modalScanningText: {
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  existingFoldersPillsContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingVertical: 4,
-  },
-  existingFolderPill: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 20,
-  },
-  existingFolderPillText: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  modalSectionLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  readBanner: {
-    position: 'absolute',
-    top: 12,
-    right: -25,
-    backgroundColor: '#0A0A0A',
-    paddingVertical: 3,
-    paddingHorizontal: 28,
-    transform: [{ rotate: '45deg' }],
-    zIndex: 5,
-    elevation: 3,
-  },
-  readBannerText: {
-    color: '#F0F0F0',
-    fontSize: 10,
-    fontWeight: '900',
-    letterSpacing: 1,
-    textAlign: 'center',
-  },
-  preloadModalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.82)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 24,
-  },
-  preloadModalContent: {
-    width: '100%',
-    maxWidth: 360,
-    borderRadius: 20,
-    borderWidth: 1,
-    padding: 24,
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.5,
-    shadowRadius: 20,
-    elevation: 15,
-  },
-  preloadModalTitle: {
-    fontSize: 17,
-    fontWeight: '800',
-    textAlign: 'center',
-    marginBottom: 6,
-  },
-  preloadModalSubtitle: {
-    fontSize: 12,
-    fontWeight: '500',
-    textAlign: 'center',
-    marginBottom: 20,
-    lineHeight: 16,
-  },
-  preloadProgressBarContainer: {
-    width: '100%',
-    height: 8,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: 4,
-    overflow: 'hidden',
-    marginBottom: 12,
-  },
-  preloadProgressBarFill: {
-    height: '100%',
-    borderRadius: 4,
-  },
-  preloadProgressStats: {
-    fontSize: 13,
-    fontWeight: '700',
-    textAlign: 'center',
-  },
-  coverPreviewContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginVertical: 12,
-  },
-  coverPreviewImage: {
-    width: 100,
-    height: 145,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.2)',
   },
 });

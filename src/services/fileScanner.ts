@@ -51,10 +51,14 @@ function isSupportedFile(fileName: string): boolean {
  * Escanea recursivamente un objeto Directory buscando archivos soportados (.pdf, .cbr, .cbz).
  * Utiliza exclusivamente el método list() de la API orientada a objetos moderna de expo-file-system.
  */
+/** Lets the UI render a frame between folders (directory listing is synchronous). */
+const yieldToUI = () => new Promise<void>(resolve => setTimeout(resolve, 0));
+
 export async function scanDirectory(dir: any): Promise<BookFile[]> {
   const books: BookFile[] = [];
 
   try {
+    await yieldToUI();
     if (!dir.exists) {
       return books;
     }
@@ -132,11 +136,4 @@ export async function scanDirectory(dir: any): Promise<BookFile[]> {
   }
 
   return books;
-}
-
-/**
- * Escanea un directorio específico por ruta string (compatibilidad).
- */
-export async function scanCustomDirectory(dirPath: string): Promise<BookFile[]> {
-  return scanDirectory(new Directory(dirPath));
 }

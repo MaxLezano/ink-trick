@@ -14,16 +14,6 @@ export const COLORS = {
   surface: '#161616',
   border: '#2A2A2A',
   overlay: 'rgba(0, 0, 0, 0.7)',
+  seal: '#C8412E',   // shu-iro (vermilion) of a hanko stamp: "finished" marks
+  sakura: '#F4A7B9', // favorites
 };
-
-// ─── Persistencia ──────────────────────────────────────────────────────────
-export const STORAGE_KEYS = {
-  LIBRARY: 'inktrick_library',
-  PROGRESS: 'inktrick_progress',
-  LAST_SCAN: 'inktrick_last_scan',
-} as const;
-
-// ─── UI ────────────────────────────────────────────────────────────────────
-export const GRID_COLUMNS_MOBILE = 2;
-export const GRID_COLUMNS_TABLET = 4;
-export const TABLET_BREAKPOINT = 768;
