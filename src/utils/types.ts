@@ -80,8 +80,6 @@ export interface ReadingStats {
 
 
 
-// ─── Estado de la biblioteca ───────────────────────────────────────────────
-export type LibrarySection = 'recent' | 'favorites' | 'folders';
 
 // ─── Navegación ────────────────────────────────────────────────────────────
 export type RootStackParamList = {

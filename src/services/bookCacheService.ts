@@ -199,11 +199,30 @@ export function isCurrentCover(uri?: string): boolean {
   return uri.startsWith(COVERS_DIR.uri) && uri.includes(`_${COVER_VERSION}_`) && coverExists(uri);
 }
 
+// Readers currently using each book's temporary files. Reopening a book while the previous
+// reader is still closing must not delete the files the new reader is about to use.
+const openReaders = new Map<string, number>();
+
+/** Marks a book's temporary files as in use by one more reader. */
+export function retainBookFiles(bookId: string) {
+  openReaders.set(bookId, (openReaders.get(bookId) ?? 0) + 1);
+}
+
 /**
- * Deletes the temporary files of a book (extracted pages, PDF copy). Books are never kept
- * decompressed: this runs when the reader closes, so the cache cannot grow over time.
+ * Releases one reader's claim; the files (extracted pages, PDF copy) are deleted when no reader
+ * uses them anymore. Books are never kept decompressed, so the cache cannot grow over time.
  */
 export function releaseBookFiles(bookId: string) {
+  const count = (openReaders.get(bookId) ?? 1) - 1;
+  if (count > 0) {
+    openReaders.set(bookId, count);
+    return;
+  }
+  openReaders.delete(bookId);
+  deleteBookFiles(bookId);
+}
+
+function deleteBookFiles(bookId: string) {
   try {
     const dir = new Directory(COMICS_DIR, bookId);
     if (dir.exists) dir.delete();
@@ -216,7 +235,7 @@ export function releaseBookFiles(bookId: string) {
 
 /** Deletes everything of books that were removed from the library (including the cover). */
 export function deleteBookCache(bookId: string) {
-  releaseBookFiles(bookId);
+  if (!openReaders.has(bookId)) deleteBookFiles(bookId);
   removeOtherCovers(bookId, '');
 }
 

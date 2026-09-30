@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { Directory } from 'expo-file-system';
 import { Alert } from 'react-native';
-import { BookFile, LibrarySection, ReadingProgress } from '../utils/types';
+import { BookFile, ReadingProgress } from '../utils/types';
 import { scanDirectory } from '../services/fileScanner';
 import * as StorageService from '../services/storageService';
 import * as BookCache from '../services/bookCacheService';
@@ -38,14 +38,23 @@ function folderNameFromUri(uri: string): string {
 function mergeScan(existing: BookFile[], scanned: BookFile[]): { merged: BookFile[]; added: number } {
   const byPath = new Map(existing.map(b => [b.filePath, b]));
   const byNameSize = new Map(existing.map(b => [`${b.fileName.toLowerCase()}|${b.fileSize}`, b]));
+  const scannedPaths = new Set(scanned.map(f => f.filePath));
+  const usedIds = new Set<string>();
   let added = 0;
 
   const merged = scanned.map(file => {
-    const prev = byPath.get(file.filePath) ?? byNameSize.get(`${file.fileName.toLowerCase()}|${file.fileSize}`);
+    let prev = byPath.get(file.filePath);
     if (!prev) {
+      // Name + size only identifies a *moved* file: its old path must be gone and its id unused,
+      // otherwise two copies of the same file would share one id (and one progress).
+      const candidate = byNameSize.get(`${file.fileName.toLowerCase()}|${file.fileSize}`);
+      if (candidate && !scannedPaths.has(candidate.filePath) && !usedIds.has(candidate.id)) prev = candidate;
+    }
+    if (!prev || usedIds.has(prev.id)) {
       added++;
       return file;
     }
+    usedIds.add(prev.id);
     return {
       ...file,
       id: prev.id,
@@ -67,9 +76,14 @@ let refreshInFlight: Promise<void> | null = null;
 
 // Background cover generation (bounded concurrency, results streamed into the store).
 let coverJobRunning = false;
+let coverJobRequested = false;
 
 async function generateMissingCovers(get: () => LibraryStore, set: (partial: Partial<LibraryStore>) => void) {
-  if (coverJobRunning) return;
+  if (coverJobRunning) {
+    // Books added meanwhile (new folder, rescan) are picked up by one more pass.
+    coverJobRequested = true;
+    return;
+  }
   coverJobRunning = true;
   try {
     // Missing covers, plus legacy full-resolution covers (migrated to light thumbnails).
@@ -95,6 +109,10 @@ async function generateMissingCovers(get: () => LibraryStore, set: (partial: Par
   } finally {
     coverJobRunning = false;
   }
+  if (coverJobRequested) {
+    coverJobRequested = false;
+    generateMissingCovers(get, set);
+  }
 }
 
 // ─── Store ───────────────────────────────────────────────────────────────────
@@ -104,7 +122,6 @@ interface LibraryStore {
   progress: Record<string, ReadingProgress>;
   scannedFolders: StorageService.ScannedFolder[];
   searchQuery: string;
-  activeSection: LibrarySection;
   isScanning: boolean;
   isLoaded: boolean;
 
@@ -115,8 +132,6 @@ interface LibraryStore {
   deleteFolder: (uri: string) => Promise<void>;
   refreshLibrary: (silent?: boolean) => Promise<void>;
   setSearchQuery: (query: string) => void;
-  setActiveSection: (section: LibrarySection) => void;
-  toggleFavorite: (bookId: string) => Promise<void>;
   updateLastOpened: (bookId: string) => Promise<void>;
   setBookPageCount: (bookId: string, pageCount: number) => void;
   updateBookCover: (bookId: string, pageNumber: number) => Promise<string | undefined>;
@@ -134,7 +149,6 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   progress: {},
   scannedFolders: [],
   searchQuery: '',
-  activeSection: 'recent',
   isScanning: false,
   isLoaded: false,
 
@@ -300,13 +314,6 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
   },
 
   setSearchQuery: (query: string) => set({ searchQuery: query }),
-  setActiveSection: (section: LibrarySection) => set({ activeSection: section }),
-
-  toggleFavorite: async (bookId: string) => {
-    const books = get().books.map(b => (b.id === bookId ? { ...b, isFavorite: !b.isFavorite } : b));
-    set({ books });
-    await StorageService.saveLibrary(books);
-  },
 
   updateLastOpened: async (bookId: string) => {
     const books = get().books.map(b => (b.id === bookId ? { ...b, lastOpenedAt: Date.now() } : b));

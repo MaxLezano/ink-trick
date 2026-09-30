@@ -210,14 +210,14 @@ export default function ReaderScreen({ navigation, route }: Props) {
   const loadTaskRef = useRef<Promise<void> | null>(null);
 
   // Leaving the reader deletes the book's temporary files (after any extraction in progress ends).
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    BookCache.retainBookFiles(bookId);
+    return () => {
       Promise.resolve(loadTaskRef.current)
         .catch(() => {})
         .finally(() => BookCache.releaseBookFiles(bookId));
-    },
-    [bookId],
-  );
+    };
+  }, [bookId]);
 
   useEffect(() => {
     let alive = true;
@@ -264,6 +264,7 @@ export default function ReaderScreen({ navigation, route }: Props) {
           setInitialPage(start);
           setPdfUri(uri);
         }
+        lastActivityRef.current = Date.now();
         setLoad({ status: 'ready' });
         flashIndicator();
       } catch (error: any) {

@@ -1,7 +1,7 @@
 /**
- * InkTrick - Storage Service
- * Persistencia ligera usando JSON local (sin SQL).
- * Usa expo-file-system para leer/escribir archivos JSON en el directorio de documentos.
+ * InkTrick - Storage service
+ * Lightweight JSON persistence (library, progress, settings, stats) in the documents directory.
+ * All reads share one in-memory object; writes are serialized and atomic.
  */
 import { File, Directory, Paths } from 'expo-file-system';
 import { BookFile, ReadingProgress, BookSettings, ReadingStats } from '../utils/types';
@@ -34,60 +34,63 @@ const tempFile = () => new File(DATA_DIR, 'data.json.tmp');
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 let cachedData: StorageData | null = null;
+// First read in progress: concurrent callers must share it, or each would parse its own copy and
+// later writes to the "losing" copy would be silently dropped.
+let pendingRead: Promise<StorageData> | null = null;
 let saveProgressTimer: ReturnType<typeof setTimeout> | null = null;
 // Serializes disk writes so two saves never interleave on the same temp file.
 let writeQueue: Promise<void> = Promise.resolve();
 
-/**
- * Asegura que el directorio de datos exista.
- */
 async function ensureDataDir(): Promise<void> {
   try {
-    if (!DATA_DIR.exists) {
-      DATA_DIR.create();
-    }
-  } catch (error) {
-    // Si falla, lo ignoramos (generalmente porque ya existe o no se puede escribir)
+    if (!DATA_DIR.exists) DATA_DIR.create();
+  } catch {
+    // Already exists or not writable; the write itself reports real failures.
   }
 }
 
-/**
- * Lee los datos persistidos del archivo JSON usando caché en memoria.
- */
-async function readData(): Promise<StorageData> {
-  if (cachedData) {
-    return cachedData;
+function readData(): Promise<StorageData> {
+  if (cachedData) return Promise.resolve(cachedData);
+  if (!pendingRead) {
+    pendingRead = loadFromDisk().finally(() => {
+      pendingRead = null;
+    });
   }
+  return pendingRead;
+}
+
+async function parseFile(file: File): Promise<StorageData | null> {
   try {
-    await ensureDataDir();
-    // A leftover temp file without the main file means a write was interrupted mid-swap.
-    const source = DATA_FILE.exists ? DATA_FILE : tempFile().exists ? tempFile() : null;
-    if (!source) {
-      cachedData = getDefaultData();
-      return cachedData;
-    }
-    const content = await source.text();
-    cachedData = JSON.parse(content) as StorageData;
-    if (!cachedData.bookSettings) {
-      cachedData.bookSettings = {};
-    }
-    if (!cachedData.progress) {
-      cachedData.progress = {};
-    }
-    if (!cachedData.library) {
-      cachedData.library = [];
-    }
-    return cachedData;
-  } catch (error) {
-    console.warn('[StorageService] Error reading data, returning defaults:', error);
-    cachedData = getDefaultData();
-    return cachedData;
+    if (!file.exists) return null;
+    const data = JSON.parse(await file.text()) as StorageData;
+    return data && typeof data === 'object' ? data : null;
+  } catch {
+    return null;
   }
 }
 
-/**
- * Escribe datos al archivo JSON de forma compacta.
- */
+async function loadFromDisk(): Promise<StorageData> {
+  await ensureDataDir();
+  // The temp file is the fallback: it holds the last write if the swap was interrupted.
+  let data = (await parseFile(DATA_FILE)) ?? (await parseFile(tempFile()));
+  if (!data) {
+    if (DATA_FILE.exists) {
+      // Unreadable file: keep a copy instead of silently replacing the user's library.
+      try {
+        DATA_FILE.copy(new File(DATA_DIR, `data.corrupt-${Date.now()}.json`));
+      } catch (error) {
+        console.warn('[StorageService] Could not keep a copy of the corrupt data file:', error);
+      }
+    }
+    data = getDefaultData();
+  }
+  data.library ??= [];
+  data.progress ??= {};
+  data.bookSettings ??= {};
+  cachedData = data;
+  return data;
+}
+
 async function writeData(data: StorageData): Promise<void> {
   cachedData = data;
   writeQueue = writeQueue.then(async () => {
@@ -107,9 +110,6 @@ async function writeData(data: StorageData): Promise<void> {
   return writeQueue;
 }
 
-/**
- * Retorna los datos por defecto.
- */
 function getDefaultData(): StorageData {
   return {
     library: [],

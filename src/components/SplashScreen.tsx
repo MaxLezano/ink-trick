@@ -3,7 +3,7 @@
  * App name, Japanese reading and an animated loading bar. Stays at least MIN_DURATION so it is
  * seen even when the library loads instantly, then fades out.
  */
-import React, { useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import { Animated, StatusBar, StyleSheet, Text, View } from 'react-native';
 import { COLORS } from '../utils/constants';
 
@@ -19,22 +19,28 @@ export default function SplashScreen({ ready, onFinish }: Props) {
   const opacity = useRef(new Animated.Value(1)).current;
   const barDone = useRef(false);
   const finished = useRef(false);
+  // Refs, not props: the bar callback is created on mount and must see the latest `ready`.
+  const readyRef = useRef(ready);
+  const onFinishRef = useRef(onFinish);
+  readyRef.current = ready;
+  onFinishRef.current = onFinish;
 
-  const finish = () => {
-    if (finished.current || !barDone.current || !ready) return;
+  const finish = useCallback(() => {
+    if (finished.current || !barDone.current || !readyRef.current) return;
     finished.current = true;
-    Animated.timing(opacity, { toValue: 0, duration: 220, useNativeDriver: true }).start(onFinish);
-  };
+    Animated.timing(opacity, { toValue: 0, duration: 220, useNativeDriver: true }).start(() => onFinishRef.current());
+  }, [opacity]);
 
   useEffect(() => {
     Animated.timing(progress, { toValue: 1, duration: MIN_DURATION, useNativeDriver: false }).start(() => {
       barDone.current = true;
       finish();
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [finish, progress]);
 
-  useEffect(finish, [ready]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (ready) finish();
+  }, [finish, ready]);
 
   const width = progress.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
 
@@ -73,7 +79,7 @@ const styles = StyleSheet.create({
     marginBottom: 32,
   },
   barOuter: {
-    width: 140,
+    width: 96,
     height: 3,
     borderRadius: 1.5,
     overflow: 'hidden',

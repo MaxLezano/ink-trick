@@ -11,13 +11,17 @@ import { SUPPORTED_EXTENSIONS } from '../utils/constants';
  * Genera un ID único basado en la ruta del archivo.
  */
 function generateBookId(filePath: string): string {
-  let hash = 0;
+  // cyrb53: 53-bit hash, practically collision free for any real library size.
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
   for (let i = 0; i < filePath.length; i++) {
-    const char = filePath.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash |= 0; // Convert to 32bit integer
+    const ch = filePath.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
   }
-  return `book_${Math.abs(hash).toString(36)}`;
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return `book_${(4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36)}`;
 }
 
 /**
@@ -71,6 +75,8 @@ export async function scanDirectory(dir: any): Promise<BookFile[]> {
     const directories: any[] = [];
 
     for (const item of contents) {
+      // Hidden entries (".thumbnails", ".trashed-…", macOS "._file.cbz" forks) are never books.
+      if ((item?.name ?? '').startsWith('.')) continue;
       if (item instanceof Directory) {
         directories.push(item);
       } else if (item) {
