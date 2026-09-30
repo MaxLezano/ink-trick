@@ -12,6 +12,7 @@ import Animated, {
   runOnJS,
   scrollTo,
   SharedValue,
+  useAnimatedProps,
   useAnimatedReaction,
   useAnimatedRef,
   useAnimatedStyle,
@@ -51,8 +52,13 @@ export default function ReorderGrid({ books, columns, cardWidth, gap, renderCard
   const scrollY = useScrollViewOffset(scrollRef);
   const contentHeight = useSharedValue(0);
   const fingerY = useSharedValue(-1); // absolute Y of the dragging finger; -1 when idle
+  // Scroll offset owned by the drag: only the auto-scroll moves the list while a card is held.
+  const dragScroll = useSharedValue(0);
   // The scroll view would otherwise also follow the dragging finger and fight the auto-scroll.
+  // Disabled on the UI thread the moment the drag starts (a JS round trip arrives too late on slow
+  // tablets: the list bounced between the finger and the auto-scroll); the state mirrors it.
   const [dragActive, setDragActive] = useState(false);
+  const scrollProps = useAnimatedProps(() => ({ scrollEnabled: fingerY.value < 0 }));
   useAnimatedReaction(
     () => fingerY.value >= 0,
     (active, previous) => {
@@ -60,7 +66,8 @@ export default function ReorderGrid({ books, columns, cardWidth, gap, renderCard
     },
   );
 
-  // While a card is dragged, scroll faster the deeper the finger is into an edge band.
+  // While a card is dragged, scroll faster the deeper the finger is into an edge band. Any other
+  // movement of the list (a native drag that slipped through) is undone on the next frame.
   useFrameCallback(frame => {
     if (fingerY.value < 0) return;
     const m = measure(scrollRef);
@@ -71,20 +78,18 @@ export default function ReorderGrid({ books, columns, cardWidth, gap, renderCard
     let speed = 0;
     if (fromTop < band) speed = -MAX_SCROLL_SPEED * Math.min(1, 1 - fromTop / band);
     else if (fromBottom < band) speed = MAX_SCROLL_SPEED * Math.min(1, 1 - fromBottom / band);
-    if (speed === 0) return;
     const step = speed * Math.min(3, (frame.timeSincePreviousFrame ?? 16) / 16);
     const maxScroll = Math.max(0, contentHeight.value - m.height);
-    const next = Math.min(maxScroll, Math.max(0, scrollY.value + step));
-    if (next !== scrollY.value) {
-      scrollY.value = next; // don't wait for the scroll event, so steps accumulate every frame
-      scrollTo(scrollRef, 0, next, false);
-    }
+    const next = Math.min(maxScroll, Math.max(0, dragScroll.value + step));
+    dragScroll.value = next;
+    if (Math.abs(scrollY.value - next) > 0.5) scrollTo(scrollRef, 0, next, false);
   });
 
   return (
     <AnimatedScrollView
       ref={scrollRef}
       scrollEnabled={!dragActive}
+      animatedProps={scrollProps}
       contentContainerStyle={contentContainerStyle}
       onContentSizeChange={(_w: number, h: number) => { contentHeight.value = h; }}
     >
@@ -103,6 +108,7 @@ export default function ReorderGrid({ books, columns, cardWidth, gap, renderCard
           renderCard={renderCard}
           onMove={onMove}
           scrollY={scrollY}
+          dragScroll={dragScroll}
           fingerY={fingerY}
         />
       ))}
@@ -123,11 +129,12 @@ interface CardProps {
   renderCard: (book: BookFile) => React.ReactNode;
   onMove: (id: string, toIndex: number) => void;
   scrollY: SharedValue<number>;
+  dragScroll: SharedValue<number>;
   fingerY: SharedValue<number>;
 }
 
 function SortableCard({
-  book, index, count, columns, cardWidth, cardHeight, gap, onMeasure, renderCard, onMove, scrollY, fingerY,
+  book, index, count, columns, cardWidth, cardHeight, gap, onMeasure, renderCard, onMove, scrollY, dragScroll, fingerY,
 }: CardProps) {
   const slotX = (index % columns) * (cardWidth + gap);
   const slotY = Math.floor(index / columns) * (cardHeight + gap);
@@ -163,7 +170,7 @@ function SortableCard({
   const follow = () => {
     'worklet';
     x.value = startX.value + dragX.value;
-    y.value = startY.value + dragY.value + scrollY.value - startScroll.value;
+    y.value = startY.value + dragY.value + dragScroll.value - startScroll.value;
     // Slot under the card's center.
     const col = Math.min(columns - 1, Math.max(0, Math.round(x.value / (cardWidth + gap))));
     const row = Math.max(0, Math.round(y.value / (cardHeight + gap)));
@@ -176,7 +183,7 @@ function SortableCard({
 
   // Auto-scroll moves the content under a still finger: keep the dragged card with it.
   useAnimatedReaction(
-    () => scrollY.value,
+    () => dragScroll.value,
     (current, previous) => {
       if (dragging.value && current !== previous) follow();
     },
@@ -188,6 +195,8 @@ function SortableCard({
       dragging.value = true;
       startX.value = x.value;
       startY.value = y.value;
+      // The drag takes over the list's offset from where it is now.
+      dragScroll.value = scrollY.value;
       startScroll.value = scrollY.value;
       dragX.value = 0;
       dragY.value = 0;
