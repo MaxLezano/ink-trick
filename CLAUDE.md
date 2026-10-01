@@ -108,6 +108,9 @@ adb -s emulator-5554 shell am start -n com.lezma.InkTrick/.MainActivity
 npx expo install <pkg>                         # always (keeps SDK 54 versions aligned)
 ```
 
+- A change to **only** image assets (no `.ts/.tsx`) leaves `createBundleReleaseJsAndAssets` UP-TO-DATE
+  and the APK ships the old images: build with
+  `./gradlew createBundleReleaseJsAndAssets --rerun assembleRelease`.
 - Release build ≈ 10 min cold (needs `-Xmx4096m -XX:MaxMetaspaceSize=1536m`, set in
   `android/gradle.properties`, or lint dies with Metaspace OOM), ≈ 1–2 min when only JS changed.
 - Versions live in **two** places: `app.json` (`version`, `android.versionCode`) and
@@ -134,10 +137,16 @@ npx expo install <pkg>                         # always (keeps SDK 54 versions a
 
 ## Brand assets
 
-- Logo: the user's gold brush ensō on a black → violet gradient (`assets/source/logo-original.png`,
-  never overwrite). Launcher icons are adaptive: `mipmap-*/ic_launcher_{foreground,background,
-  monochrome}.webp` (ensō at 47% of the 108dp canvas, user-approved size) + legacy
-  `ic_launcher{,_round}.webp`. `assets/icon.png` / `adaptive-*.png` mirror them for Expo.
+- Logo: the user's koi pair (CorelDRAW export) recolored in `assets/source/logo-koi.svg`: gold-gradient brush ensō with both koi cut out by an SVG mask
+  (the background shows through).
+  Launcher icons are adaptive: `mipmap-*/ic_launcher_{foreground,background,monochrome}.webp`
+  (logo at 47% of the 108dp canvas; monochrome = ensō with the koi cut out) + legacy
+  `ic_launcher{,_round}.webp` (logo at 50%). Background: 45° black → violet gradient (mostly
+  black, violet in the bottom-right) with a soft halo behind the logo.
+  `assets/icon.png` / `adaptive-*.png` mirror them for Expo.
+- Home decorations (the user's ink SVGs, pre-rendered to `assets/decor/`): a faint
+  sakura branch wallpaper (two dim grays + wisteria blossoms) falling diagonally from the
+  top-right corner (the trunk runs off it) towards the bottom-left, and a very faint torii in the "Continuar leyendo" hero bleeding off its edges.
 - Play Store listing art lives in `store/`: `play_icon_512.png` and `feature_graphic_1024x500.png`
   (background generated with local ComfyUI, DreamShaper XL Turbo; logo and text composited on top).
 - ComfyUI Desktop runs locally at `http://127.0.0.1:8000` (RTX 3080, 12 GB). MCP server `comfyui`
@@ -191,7 +200,10 @@ margins cropped), `getPdfPageCount`, `copyToLocalFile`, `readBookInfo` (ComicInf
   progress, settings and stats persist. Reopening a book re-extracts it (a few seconds).
 - **PDF**: `react-native-pdf` (Pdfium, vector, tile rendering). SAF files are copied atomically
   to `cache/inktrick_pdf/<id>.pdf` while open. Page count is fetched natively **before** mounting.
-- Loading screen: `BambooLoader` (reader/), a row of bamboo stalks cut by a gold stroke. Comics
+- Loading screen: `BambooLoader` (reader/), a row of bamboo stalks cut by a gold stroke. Stalks are
+  ComfyUI sprites recolored washi white (`assets/loader/bamboo_stalk_{0,1}.png`, flat canes with
+  small leaves, mirrored per stalk) drawn twice through SVG `ClipPath`s, each with its own cut
+  slope; gold cut face; the blade is a short curved crescent fading to points at both ends. Comics
   report real progress: 0–90% = compressed bytes read (fd offset via `Os.lseek`, or a counting
   stream in the zip fallback), 90–99% = pages renamed + measured, 100 = manifest written; each
   stalk is an equal share. PDF / EPUB (no progress) loop.

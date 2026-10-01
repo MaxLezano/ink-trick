@@ -481,6 +481,8 @@ export default function DashboardScreen({ navigation }: Props) {
           end={{ x: 1, y: 0.4 }}
           style={StyleSheet.absoluteFill}
         />
+        {/* Faint ink torii bleeding off the right, top and bottom edges. */}
+        <Image source={TORII} style={styles.heroTorii} contentFit="contain" />
         <View style={styles.heroBody}>
           <View style={[styles.heroCover, { width: coverWidth }]}>
             {book.coverUri ? (
@@ -530,6 +532,8 @@ export default function DashboardScreen({ navigation }: Props) {
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <StatusBar barStyle="light-content" backgroundColor={COLORS.background} />
+      {/* Wallpaper: a faint sakura branch growing in from the right edge. */}
+      <Image source={SAKURA} style={styles.sakura} contentFit="contain" pointerEvents="none" />
 
       {/* Header */}
       {selectionMode ? (
@@ -924,11 +928,22 @@ function MenuItem({ icon, label, onPress, danger, last }: {
   );
 }
 
+const SAKURA = require('../../assets/decor/sakura_branch.png');
+const TORII = require('../../assets/decor/torii.png');
+
 // ─── Styles ──────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
+  },
+  // Falls diagonally from the top-right corner (the trunk runs off it) towards the bottom-left.
+  sakura: {
+    position: 'absolute',
+    right: '-14%',
+    top: '3%',
+    width: '112%',
+    aspectRatio: 1234 / 1328,
   },
   header: {
     flexDirection: 'row',
@@ -1077,6 +1092,14 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.surface,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.08)',
+  },
+  heroTorii: {
+    position: 'absolute',
+    right: '-18%',
+    top: '-29%',
+    height: '157%',
+    aspectRatio: 1393 / 1048,
+    opacity: 0.045,
   },
   heroBody: {
     flexDirection: 'row',
