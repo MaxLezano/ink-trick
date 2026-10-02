@@ -464,7 +464,8 @@ export default function ReaderScreen({ navigation, route }: Props) {
 
   // ─── Volume keys ─────────────────────────────────────────────────────────
   const turnRef = useRef<(delta: number) => void>(() => {});
-  turnRef.current = (delta: number) => {
+  turnRef.current = (key: number) => {
+    const delta = settings?.invertVolumeKeys ? -key : key;
     if (isEpub) epubRef.current?.turn(delta);
     else if (isComic) comicRef.current?.turnPage(delta);
     else goToPage(currentPageRef.current + delta);

@@ -66,6 +66,8 @@ This file is the **only** project doc: keep it in sync whenever behavior changes
   (no tabs, no empty chapter list).
 - Volume keys turn pages (down = next, up = previous; setting "Teclas de volumen", default on):
   `ReaderKeysModule` + `MainActivity.dispatchKeyEvent`, enabled only while a reader is ready.
+  The keys are logical (next / previous), never mirrored by RTL; their physical side depends on the
+  tablet and its rotation, so the per-book setting "Invertir teclas de volumen" swaps them.
 - Next volume is preloaded (extraction / PDF copy / EPUB unpack) once the reader passes 90%, via
   `preloadBook` (a retain claim released 5 s after leaving, so "Siguiente" takes it over).
 - Settings: centered dialog, per book. Presets Manga (paged RTL) / Manhwa (vertical continuous) /

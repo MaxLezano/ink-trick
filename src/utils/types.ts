@@ -77,6 +77,7 @@ export interface BookSettings {
   autoCrop?: boolean;       // Trim uniform white/black margins (comics)
   fullscreen?: boolean;     // Hide the Android status and navigation bars
   volumeKeys?: boolean;     // Volume down / up turn pages
+  invertVolumeKeys?: boolean; // Volume up turns forward (keys sit the other way on some tablets)
   textSize?: number;        // EPUB: font size in %
   textTheme?: TextTheme;    // EPUB: page colors
   textFont?: TextFont;      // EPUB: typeface

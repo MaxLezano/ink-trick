@@ -234,6 +234,15 @@ export default function ReaderSettingsSheet({ visible, settings, isComic, isEpub
             value={settings.volumeKeys ?? true}
             onSelect={v => set('volumeKeys', v)}
           />
+          {(settings.volumeKeys ?? true) && (
+            <Segmented
+              label="Invertir teclas de volumen"
+              hint="Subir volumen avanza, bajar retrocede"
+              choices={onOff}
+              value={settings.invertVolumeKeys ?? false}
+              onSelect={v => set('invertVolumeKeys', v)}
+            />
+          )}
 
           <Text style={styles.section}>Pantalla</Text>
           <Segmented
