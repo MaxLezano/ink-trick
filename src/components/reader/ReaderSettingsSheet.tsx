@@ -7,6 +7,7 @@ import { Modal, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View 
 import { BookSettings, DoublePageMode, TextFont, TextTheme } from '../../utils/types';
 import { COLORS } from '../../utils/constants';
 import { RefreshIcon } from '../Icons';
+import BrightnessSlider from '../os/BrightnessSlider';
 
 interface Props {
   visible: boolean;
@@ -245,6 +246,9 @@ export default function ReaderSettingsSheet({ visible, settings, isComic, isEpub
           )}
 
           <Text style={styles.section}>Pantalla</Text>
+          <View style={styles.brightness}>
+            <BrightnessSlider />
+          </View>
           <Segmented
             label="Atenuar brillo"
             choices={[0, 0.2, 0.4, 0.6].map(v => ({ label: `${v * 100}%`, value: v }))}
@@ -275,6 +279,7 @@ export default function ReaderSettingsSheet({ visible, settings, isComic, isEpub
 }
 
 const styles = StyleSheet.create({
+  brightness: { marginBottom: 14 },
   backdrop: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0,0,0,0.55)',

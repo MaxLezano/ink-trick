@@ -33,6 +33,16 @@ interface StorageData {
   autoBackup?: AutoBackupConfig;
   tourSeenAt?: number; // Legacy (v1.3.2): the whole guided tour was seen
   tourParts?: { intro?: number; library?: number }; // Tour parts finished or skipped
+  tabletSettings?: TabletSettings;
+}
+
+export interface TabletSettings {
+  autoRotateInReader: boolean;
+  eyeComfort: boolean;
+  brightness?: number; // Slider position 0..1
+  avatarId?: string; // An avatar of src/utils/avatars.ts, or 'photo'
+  photoUri?: string; // Own profile photo (file:// in the app's files)
+  profileName?: string;
 }
 
 export type StorageSnapshot = StorageData;
@@ -431,4 +441,21 @@ export async function getSnapshot(): Promise<StorageSnapshot> {
 /** Replaces the persisted data (used when restoring a backup). */
 export async function replaceSnapshot(next: StorageSnapshot): Promise<void> {
   await writeData(next);
+}
+
+// ─── InkTrick OS (tablet) settings ──────────────────────────────────────────
+
+const DEFAULT_TABLET: TabletSettings = { autoRotateInReader: false, eyeComfort: false };
+
+export async function getTabletSettings(): Promise<TabletSettings> {
+  const data = await readData();
+  return { ...DEFAULT_TABLET, ...data.tabletSettings };
+}
+
+export async function saveTabletSettings(settings: Partial<TabletSettings>): Promise<TabletSettings> {
+  const data = await readData();
+  const updated = { ...DEFAULT_TABLET, ...data.tabletSettings, ...settings };
+  data.tabletSettings = updated;
+  await writeData(data);
+  return updated;
 }

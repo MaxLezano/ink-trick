@@ -43,6 +43,9 @@ import PageScrubber from '../components/reader/PageScrubber';
 import ReaderSettingsSheet from '../components/reader/ReaderSettingsSheet';
 import ReaderIndexSheet from '../components/reader/ReaderIndexSheet';
 import EpubReader, { chapterPositions, EpubLocation, EpubReaderHandle } from '../components/reader/EpubReader';
+import ReaderClock from '../components/reader/ReaderClock';
+import { setOrientation } from '../services/tabletControlService';
+import { useTabletStore } from '../store/tabletStore';
 
 const { ReaderKeysModule } = NativeModules;
 const keyEmitter = ReaderKeysModule ? new NativeEventEmitter(ReaderKeysModule) : null;
@@ -199,6 +202,14 @@ export default function ReaderScreen({ navigation, route }: Props) {
     await StorageService.flushProgress();
     await useLibraryStore.getState().reloadProgress();
   }, [bookId, flushStats]);
+
+  // InkTrick OS: the reader may follow the sensor ("Giro automático"). There is no cleanup on
+  // purpose: "Siguiente" mounts the next reader before this one unmounts, and the home screen
+  // puts the portrait lock back when it regains focus.
+  const autoRotateInReader = useTabletStore(state => state.autoRotateInReader);
+  useEffect(() => {
+    setOrientation(autoRotateInReader ? 'auto' : 'portrait');
+  }, [autoRotateInReader]);
 
   // Save on leave (back button, gesture, hardware back) and when the app goes to background.
   useEffect(() => {
@@ -699,6 +710,7 @@ export default function ReaderScreen({ navigation, route }: Props) {
                 </Text>
               ) : null}
             </View>
+            <ReaderClock />
             <TouchableOpacity style={styles.iconBtn} onPress={() => setShowIndex(true)} accessibilityLabel={toc.length > 0 ? 'Índice y marcadores' : 'Marcadores'}>
               <IndexIcon size={19} color="#FFF" />
             </TouchableOpacity>

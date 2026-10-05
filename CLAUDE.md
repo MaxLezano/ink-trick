@@ -99,6 +99,47 @@ count as read pages (scrubber jumps do not).
 **Splash**: `src/components/SplashScreen.tsx` over the navigator: "InkTrick", インクトリック and an
 animated bar, at least 1.4 s, then fades. The native window background is `#0A0A0A` (no logo).
 
+## InkTrick OS (branch `ink-trick-so` only)
+
+The tablet runs InkTrick as a dedicated reader ("Kindle mode"). `main` stays the plain Play Store
+app: never merge this branch into it (features worth porting are copied by hand, as done with
+`ReaderClock`, `sweepReadingCache` and the WebP decor). Provisioning any tablet:
+`setup-tablet.ps1` (`-Serial`, `-Build`, `-Remove`): checks Android ≥ 7, other device owners,
+accounts / secondary users and lock PIN, rebuilds the APK when sources are newer, `dpm
+set-device-owner`, appops WRITE_SETTINGS, MTP when unlocked, Doze whitelist, location on, then
+forces the policies through `KioskCommandReceiver` (exported but guarded by
+`android.permission.DUMP`: only adb / system can send `REAPPLY_KIOSK` / `RELEASE_KIOSK`).
+`KioskPolicy.release` (also in-app: long-press "Ajustes rápidos" > "Desactivar InkTrick OS")
+gives up the device owner, so no factory reset is ever needed to undo it. Outside device-owner
+mode the app behaves like the regular app (free rotation, no status line). Test tablet: TCL 8052 (`6409AC0667EC541`, Android 9, 1024×600 landscape-native, 1.5 GB).
+- **Never rename / remove `AdminReceiver`** or change the signing key: losing the device owner
+  needs a factory reset. Always `adb install -r` (never uninstall).
+- `KioskPolicy.applyOnce` (bump `POLICY_VERSION` to re-apply): lock task packages (InkTrick,
+  DocumentsUI, Drive, Play services; not Settings, or FallbackHome gets locked at boot), only the
+  power menu as lock task feature, keyguard disabled, persistent HOME, location / accounts
+  grants, wallpaper (`assets/wallpaper.webp`, square logo: only seen during boot, landscape).
+  `onResume` re-enters lock task and keeps the *system* rotation in portrait (rotation learned
+  by `DeviceOrientationHelper` while the activity is portrait-locked).
+- Android's keyguard is replaced by `SleepActivity` (native): started on SCREEN_OFF, random
+  ink screensaver from `android/app/src/main/assets/screensavers/` (ComfyUI, no text: the clock,
+  date and battery are drawn on top), swipe up to dismiss. Back is ignored there.
+- Home: `OsStatusBar` (time / Wi-Fi / battery, Android's bars are hidden; the reader's top bar has
+  `ReaderClock`) and the profile avatar opens `InkTrickQuickMenu`: profile (26 sumi-e avatars —
+  people, animals, yōkai — in `assets/avatars/`, or own photo; name),
+  battery, in-app Wi-Fi picker (`WifiPanel`: deprecated WifiManager APIs, allowed for device
+  owners), brightness (`BrightnessSlider`, system setting via `dpm.setSystemSetting`, gamma 2.2,
+  saved on release; also in the reader settings), eye comfort (warm overlay in `App.tsx`),
+  reader auto-rotate, screen timeout, Drive, Files, USB status. Long-press "Ajustes rápidos"
+  (1.5 s) opens Android settings outside lock task (Home returns).
+- Apps outside the lock task whitelist are launched after `stopLockTask`; whitelisted ones stay
+  inside it. Native receivers in `TabletControlModule` only run while JS listens.
+- The app is rarely relaunched (it is the launcher), so the home screen sweeps temporary book files
+  of closed readers on focus (`sweepReadingCache`).
+- Screensaver art must leave the top third calm for the clock and must not contain text; check
+  anatomy (the first koi had misplaced eyes; the current one was cleaned with OpenCV inpainting).
+- The reader sets its orientation on mount (no cleanup, see "Siguiente" gotcha); the home screen
+  restores portrait on focus.
+
 ## Commands
 
 ```bash

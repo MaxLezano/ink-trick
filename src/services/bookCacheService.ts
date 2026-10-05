@@ -342,6 +342,24 @@ function legacyRootPdfs(): File[] {
  * Clears extracted pages, PDF copies and leftovers of old versions. Runs on every launch (a
  * reader killed by the system cannot clean up after itself). Covers and progress are kept.
  */
+/**
+ * Deletes the temporary files of every book no reader holds. App launch already clears them, but
+ * as the tablet's home screen (InkTrick OS) the app may run for weeks without relaunching: a
+ * reader that was killed mid-extraction would otherwise leave its pages behind until a reboot.
+ */
+export function sweepReadingCache() {
+  for (const dir of [COMICS_DIR, PDF_DIR, EPUB_DIR]) {
+    try {
+      if (!dir.exists) continue;
+      for (const item of dir.list()) {
+        const id = item.name.replace(/\.pdf$/, '');
+        if (openReaders.has(id)) continue;
+        try { item.delete(); } catch {}
+      }
+    } catch {}
+  }
+}
+
 export function clearReadingCache() {
   // Glide's disk cache only held resized copies of local files: never needed.
   Image.clearDiskCache().catch(() => {});

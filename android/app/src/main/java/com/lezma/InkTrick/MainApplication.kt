@@ -46,6 +46,7 @@ class MainApplication : Application(), ReactApplication {
     }
     loadReactNative(this)
     ApplicationLifecycleDispatcher.onApplicationCreate(this)
+    SleepActivity.install(this)
   }
 
   override fun onConfigurationChanged(newConfig: Configuration) {

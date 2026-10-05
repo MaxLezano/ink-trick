@@ -51,6 +51,11 @@ import {
   StarIcon,
   TrashIcon,
 } from '../components/Icons';
+import InkTrickQuickMenu from '../components/InkTrickQuickMenu';
+import OsStatusBar from '../components/os/OsStatusBar';
+import ProfileAvatar from '../components/os/ProfileAvatar';
+import { setOrientation } from '../services/tabletControlService';
+import { sweepReadingCache } from '../services/bookCacheService';
 
 type Props = {
   navigation: StackNavigationProp<RootStackParamList, 'Dashboard'>;
@@ -85,6 +90,7 @@ export default function DashboardScreen({ navigation }: Props) {
   const [coverModalVisible, setCoverModalVisible] = useState(false);
   const [coverPageInput, setCoverPageInput] = useState('1');
   const [coverLoading, setCoverLoading] = useState(false);
+  const [quickMenuVisible, setQuickMenuVisible] = useState(false);
   // Reorder mode of a collection: working copy of the ids, saved with "Listo".
   const [reorderIds, setReorderIds] = useState<string[] | null>(null);
 
@@ -253,6 +259,16 @@ export default function DashboardScreen({ navigation }: Props) {
       }
     });
   }, [tour.active, tour.index, tour.order]);
+
+  // InkTrick OS: the home screen is always portrait (the reader may rotate), and it drops the
+  // temporary files of closed books (the app rarely relaunches when it is the launcher).
+  useFocusEffect(
+    useCallback(() => {
+      setOrientation('portrait');
+      const timer = setTimeout(sweepReadingCache, 3000);
+      return () => clearTimeout(timer);
+    }, []),
+  );
 
   // Hardware back: leave selection / search / section before leaving the app.
   useFocusEffect(
@@ -534,6 +550,7 @@ export default function DashboardScreen({ navigation }: Props) {
       <StatusBar barStyle="light-content" backgroundColor={COLORS.background} />
       {/* Wallpaper: a faint sakura branch growing in from the right edge. */}
       <Image source={SAKURA} style={styles.sakura} contentFit="contain" pointerEvents="none" />
+      <OsStatusBar />
 
       {/* Header */}
       {selectionMode ? (
@@ -601,6 +618,9 @@ export default function DashboardScreen({ navigation }: Props) {
                     {isScanning ? <ActivityIndicator size="small" color="#0A0A0A" /> : <RefreshIcon size={17} color="#0A0A0A" />}
                   </TouchableOpacity>
                 </TourTarget>
+                <TouchableOpacity onPress={() => setQuickMenuVisible(true)} accessibilityLabel="Perfil y ajustes rápidos">
+                  <ProfileAvatar size={44} />
+                </TouchableOpacity>
               </>
             )}
           </View>
@@ -889,6 +909,8 @@ export default function DashboardScreen({ navigation }: Props) {
           </Pressable>
         </Pressable>
       </Modal>
+
+      <InkTrickQuickMenu visible={quickMenuVisible} onClose={() => setQuickMenuVisible(false)} />
     </View>
   );
 }
@@ -928,8 +950,8 @@ function MenuItem({ icon, label, onPress, danger, last }: {
   );
 }
 
-const SAKURA = require('../../assets/decor/sakura_branch.png');
-const TORII = require('../../assets/decor/torii.png');
+const SAKURA = require('../../assets/decor/sakura_branch.webp');
+const TORII = require('../../assets/decor/torii.webp');
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
