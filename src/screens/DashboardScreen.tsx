@@ -928,8 +928,8 @@ function MenuItem({ icon, label, onPress, danger, last }: {
   );
 }
 
-const SAKURA = require('../../assets/decor/sakura_branch.png');
-const TORII = require('../../assets/decor/torii.png');
+const SAKURA = require('../../assets/decor/sakura_branch.webp');
+const TORII = require('../../assets/decor/torii.webp');
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({

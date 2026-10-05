@@ -18,7 +18,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { COLORS } from '../../utils/constants';
 
-const SPRITES = [require('../../../assets/loader/bamboo_stalk_0.png'), require('../../../assets/loader/bamboo_stalk_1.png')];
+const SPRITES = [require('../../../assets/loader/bamboo_stalk_0.webp'), require('../../../assets/loader/bamboo_stalk_1.webp')];
 // Washi-white sprites. Geometry (px): the cane is centered and 46 px wide; leaves stick out to the sides.
 const SPRITE_W = 282;
 const SPRITE_H = 791;
