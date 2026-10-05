@@ -43,8 +43,11 @@ import PageScrubber from '../components/reader/PageScrubber';
 import ReaderSettingsSheet from '../components/reader/ReaderSettingsSheet';
 import ReaderIndexSheet from '../components/reader/ReaderIndexSheet';
 import EpubReader, { chapterPositions, EpubLocation, EpubReaderHandle } from '../components/reader/EpubReader';
+import ReaderClock from '../components/reader/ReaderClock';
 
 const { ReaderKeysModule } = NativeModules;
+// Amber (kin-iro family) for the "Tono cálido" overlay: cuts blue light without a red cast.
+const WARM_TINT = 'rgb(255, 170, 60)';
 const keyEmitter = ReaderKeysModule ? new NativeEventEmitter(ReaderKeysModule) : null;
 
 // Readers asking for volume-key page turns. "Siguiente" mounts the new reader before the old one
@@ -699,6 +702,7 @@ export default function ReaderScreen({ navigation, route }: Props) {
                 </Text>
               ) : null}
             </View>
+            <ReaderClock />
             <TouchableOpacity style={styles.iconBtn} onPress={() => setShowIndex(true)} accessibilityLabel={toc.length > 0 ? 'Índice y marcadores' : 'Marcadores'}>
               <IndexIcon size={19} color="#FFF" />
             </TouchableOpacity>
@@ -776,6 +780,9 @@ export default function ReaderScreen({ navigation, route }: Props) {
         </TouchableOpacity>
       )}
 
+      {settings && (settings.warmth ?? 0) > 0 && (
+        <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: WARM_TINT, opacity: settings.warmth }]} />
+      )}
       {settings && settings.brightnessDimmer > 0 && (
         <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: '#000', opacity: settings.brightnessDimmer }]} />
       )}

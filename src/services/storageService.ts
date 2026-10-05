@@ -279,6 +279,7 @@ export const DEFAULT_BOOK_SETTINGS: BookSettings = {
   fitMode: 0,
   enableDoubleTapZoom: true,
   brightnessDimmer: 0,
+  warmth: 0,
   isRTL: false,
   tapToTurn: true,
   keepAwake: true,

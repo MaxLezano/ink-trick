@@ -70,6 +70,7 @@ export interface BookSettings {
   fitMode: number; // 0: Fit Width, 1: Fit Height, 2: Fit Both
   enableDoubleTapZoom: boolean;
   brightnessDimmer: number; // 0 to 0.6 (opacity of the black dimmer overlay)
+  warmth?: number;          // 0 to 0.3 (opacity of the warm amber overlay, eye comfort at night)
   isRTL: boolean;
   tapToTurn?: boolean;      // Tap left/right edges to turn pages (paged mode)
   keepAwake?: boolean;      // Keep the screen on while reading

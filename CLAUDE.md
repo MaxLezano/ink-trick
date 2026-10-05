@@ -58,7 +58,8 @@ This file is the **only** project doc: keep it in sync whenever behavior changes
 - Tap zones (`src/components/reader/tapZones.ts`, shared by comic + PDF): the top band (~9.5% of
   the height) opens the controls; narrow edge strips (17% width, 12–90% height) turn pages
   (mirrored in RTL); everything else does nothing. Controls close ONLY with their ✕ button.
-- Controls: top bar (back, title + author/collection, índice, bookmark toggle, settings, ✕) + bottom
+- Controls: top bar (back, title + author/collection, time + battery (`ReaderClock`, fullscreen hides
+  Android's), índice, bookmark toggle, settings, ✕) + bottom
   page scrubber (reversed in RTL, gold ticks at bookmarks).
 - Índice dialog: "Capítulos" (PDF outline from `onLoadComplete`'s tableContents, EPUB nav/NCX, CBZ
   chapter folders when there are ≥ 2) and "Marcadores" (jump / remove). Many PDFs have no outline
@@ -74,7 +75,8 @@ This file is the **only** project doc: keep it in sync whenever behavior changes
   Cómic (paged LTR) / Libro (paged, never double page); the active one is highlighted by color only.
   Options: scroll direction, paging, reading direction, fit (width / height / full), double page
   (off / auto in landscape / on; cover and wide pages stay single), auto crop, double-tap zoom,
-  tap-to-turn, dimmer (0–60%), fullscreen (hides the nav bar), keep awake.
+  tap-to-turn, dimmer (0–60%), warm tone ("Tono cálido", amber overlay 0–30%), fullscreen (hides
+  the nav bar), keep awake.
 - New books inherit the last settings of the same series (collection name, else parent folder).
 - Pinch zoom up to 5x with focal point, pan with inertia, double tap zooms at the tapped point.
 - Last page → "Terminaste este tomo" card with a "Siguiente" button (next book of the series).
@@ -200,10 +202,12 @@ margins cropped), `getPdfPageCount`, `copyToLocalFile`, `readBookInfo` (ComicInf
   is open. `ReaderScreen` calls `releaseBookFiles(bookId)` on unmount (after any extraction in
   progress settles) and `App.tsx` runs `clearReadingCache()` on every launch. Only covers,
   progress, settings and stats persist. Reopening a book re-extracts it (a few seconds).
+  The library also sweeps leftovers of closed books on focus (`sweepReadingCache`): Android can keep
+  the app alive for weeks without a relaunch.
 - **PDF**: `react-native-pdf` (Pdfium, vector, tile rendering). SAF files are copied atomically
   to `cache/inktrick_pdf/<id>.pdf` while open. Page count is fetched natively **before** mounting.
 - Loading screen: `BambooLoader` (reader/), a row of bamboo stalks cut by a gold stroke. Stalks are
-  ComfyUI sprites recolored washi white (`assets/loader/bamboo_stalk_{0,1}.png`, flat canes with
+  ComfyUI sprites recolored washi white (`assets/loader/bamboo_stalk_{0,1}.webp`, flat canes with
   small leaves, mirrored per stalk) drawn twice through SVG `ClipPath`s, each with its own cut
   slope; gold cut face; the blade is a short curved crescent fading to points at both ends. Comics
   report real progress: 0–90% = compressed bytes read (fd offset via `Os.lseek`, or a counting

@@ -252,6 +252,13 @@ export default function ReaderSettingsSheet({ visible, settings, isComic, isEpub
             onSelect={v => set('brightnessDimmer', v)}
           />
           <Segmented
+            label="Tono cálido"
+            hint="Menos luz azul para leer de noche"
+            choices={[0, 0.1, 0.2, 0.3].map(v => ({ label: v ? `${Math.round(v * 100)}%` : 'No', value: v }))}
+            value={settings.warmth ?? 0}
+            onSelect={v => set('warmth', v)}
+          />
+          <Segmented
             label="Pantalla completa"
             hint="Oculta la barra de navegación de Android"
             choices={onOff}

@@ -36,6 +36,7 @@ import TourTarget from '../components/tour/TourTarget';
 import { measureTarget, Tour, useTour } from '../components/tour/tour';
 import { TOUR_STEPS, TourRun } from '../components/tour/steps';
 import { getTourProgress, TourProgress } from '../services/storageService';
+import { sweepReadingCache } from '../services/bookCacheService';
 import {
   ArrowIcon,
   BackIcon,
@@ -253,6 +254,14 @@ export default function DashboardScreen({ navigation }: Props) {
       }
     });
   }, [tour.active, tour.index, tour.order]);
+
+  // Drop the temporary files of closed books whenever the library comes back into view.
+  useFocusEffect(
+    useCallback(() => {
+      const timer = setTimeout(sweepReadingCache, 3000);
+      return () => clearTimeout(timer);
+    }, []),
+  );
 
   // Hardware back: leave selection / search / section before leaving the app.
   useFocusEffect(
