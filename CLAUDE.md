@@ -100,7 +100,7 @@ count as read pages (scrubber jumps do not).
 **Splash**: `src/components/SplashScreen.tsx` over the navigator: "InkTrick", インクトリック and an
 animated bar, at least 1.4 s, then fades. The native window background is `#0A0A0A` (no logo).
 
-## InkTrick OS (branch `ink-trick-so` only)
+## InkTrick OS (branch `inktrick-dedicated` only)
 
 The tablet runs InkTrick as a dedicated reader ("Kindle mode"). `main` stays the plain Play Store
 app: never merge this branch into it (features worth porting are copied by hand, as done with

@@ -1,6 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
   <!--
-    InkTrick OS build (branch ink-trick-so): InkTrick is the tablet's device owner and home screen.
+    InkTrick OS build (branch inktrick-dedicated): InkTrick is the tablet's device owner and home screen.
     It needs Wi-Fi control (location to scan), the Google account list and internet (only to read
     the account's name and photo for the avatar), system settings (brightness, screen timeout,
     portrait rotation) and the wallpaper. Everything else libraries would merge in is stripped.
