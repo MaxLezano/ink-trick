@@ -4,7 +4,7 @@
  * Android settings (leaves the kiosk; Home brings InkTrick back).
  */
 import React, { useEffect, useState } from 'react';
-import { Alert, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS } from '../utils/constants';
@@ -25,18 +25,17 @@ import {
 import {
   addGoogleAccount,
   getScreenTimeout,
-  openAndroidSettings,
-  openFileManager,
   openGoogleDrive,
   pickProfilePhoto,
-  releaseKiosk,
   setScreenTimeout,
 } from '../services/tabletControlService';
-import { useTabletStore } from '../store/tabletStore';
+import { useTabletStore, WARMTH_LEVELS } from '../store/tabletStore';
+import { importFromDownloads } from '../services/importService';
 import { AVATARS } from '../utils/avatars';
 import ProfileAvatar from './os/ProfileAvatar';
 import BrightnessSlider from './os/BrightnessSlider';
 import WifiPanel from './os/WifiPanel';
+import MaintenancePanel from './os/MaintenancePanel';
 import { useDeviceStatus } from './os/useDeviceStatus';
 
 interface Props {
@@ -44,7 +43,12 @@ interface Props {
   onClose: () => void;
 }
 
-type View_ = 'settings' | 'profile' | 'wifi';
+type View_ = 'settings' | 'profile' | 'wifi' | 'maintenance';
+
+const SLEEP_MODES: { label: string; value: 'art' | 'book' }[] = [
+  { label: 'Libro actual', value: 'book' },
+  { label: 'Arte', value: 'art' },
+];
 
 const TIMEOUTS = [
   { label: '2 min', value: 120000 },
@@ -61,8 +65,9 @@ export default function InkTrickQuickMenu({ visible, onClose }: Props) {
 
   const profileName = useTabletStore(s => s.profileName);
   const googleAccount = useTabletStore(s => s.googleAccount);
-  const eyeComfort = useTabletStore(s => s.eyeComfort);
+  const warmth = useTabletStore(s => s.warmth);
   const autoRotate = useTabletStore(s => s.autoRotateInReader);
+  const sleepMode = useTabletStore(s => s.sleepMode);
 
   useEffect(() => {
     if (!visible) return;
@@ -70,38 +75,6 @@ export default function InkTrickQuickMenu({ visible, onClose }: Props) {
     getScreenTimeout().then(setTimeoutValue);
     useTabletStore.getState().refreshGoogleAccount();
   }, [visible]);
-
-  // Maintenance, hidden behind a long press on the title.
-  const openAndroid = () =>
-    Alert.alert('Mantenimiento', 'Estas opciones salen del modo InkTrick. Para volver desde Android, toca el botón de inicio.', [
-      { text: 'Cancelar', style: 'cancel' },
-      { text: 'Desactivar InkTrick OS', onPress: confirmRelease },
-      {
-        text: 'Ajustes de Android',
-        onPress: () => {
-          onClose();
-          openAndroidSettings();
-        },
-      },
-    ]);
-
-  const confirmRelease = () =>
-    Alert.alert(
-      '¿Desactivar InkTrick OS?',
-      'La tablet vuelve a ser una tablet Android normal: vuelven la pantalla de bloqueo, las demás apps y la barra de notificaciones. Tus libros y tu progreso se conservan. Para activarlo otra vez hay que usar setup-tablet.ps1 desde una computadora.',
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Desactivar',
-          onPress: async () => {
-            const ok = await releaseKiosk();
-            if (ok) useTabletStore.setState({ isDeviceOwner: false });
-            onClose();
-            Alert.alert('InkTrick OS', ok ? 'Modo dedicado desactivado.' : 'No se pudo desactivar el modo dedicado.');
-          },
-        },
-      ],
-    );
 
   const openDrive = async () => {
     if (!googleAccount) {
@@ -112,16 +85,13 @@ export default function InkTrickQuickMenu({ visible, onClose }: Props) {
     else Alert.alert('Google Drive', 'Google Drive no está instalado en esta tablet. Puedes copiar tus libros con el cable USB.');
   };
 
-  const openFiles = async () => {
-    if (await openFileManager()) onClose();
-    else Alert.alert('Archivos', 'No se encontró un explorador de archivos. Puedes copiar tus libros con el cable USB.');
+  const importBooks = () => {
+    onClose();
+    importFromDownloads();
   };
 
-  const usbSubtitle = !status.isUsbConnected
-    ? 'Conecta la tablet a tu computadora con el cable'
-    : status.isMtpActive
-      ? 'Conectada: copia tus libros desde la computadora'
-      : 'Cable conectado (solo carga)';
+  // Short: it shares a row. The full how-to lives in /sdcard/InkTrick/LEEME.txt.
+  const usbSubtitle = !status.isUsbConnected ? 'Sin cable' : status.isMtpActive ? 'Conectada a la PC' : 'Solo carga';
 
   return (
     <Modal animationType="fade" transparent visible={visible} onRequestClose={view === 'settings' ? onClose : () => setView('settings')}>
@@ -129,12 +99,14 @@ export default function InkTrickQuickMenu({ visible, onClose }: Props) {
         <Pressable style={[styles.panel, { marginTop: Math.max(insets.top, 12) + 8 }]} onPress={e => e.stopPropagation()}>
           {view === 'wifi' ? (
             <WifiPanel onBack={() => setView('settings')} />
+          ) : view === 'maintenance' ? (
+            <MaintenancePanel onBack={() => setView('settings')} onClose={onClose} />
           ) : view === 'profile' ? (
             <ProfilePanel onBack={() => setView('settings')} />
           ) : (
             <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
               <View style={styles.topRow}>
-                <Pressable onLongPress={openAndroid} delayLongPress={1500}>
+                <Pressable onLongPress={() => setView('maintenance')} delayLongPress={1500}>
                   <Text style={styles.title}>Ajustes rápidos</Text>
                 </Pressable>
                 <TouchableOpacity style={styles.roundBtn} onPress={onClose} accessibilityLabel="Cerrar">
@@ -178,14 +150,25 @@ export default function InkTrickQuickMenu({ visible, onClose }: Props) {
                 <BrightnessSlider />
               </View>
 
+              <View style={styles.section}>
+                <View style={styles.sectionTitleRow}>
+                  <EyeIcon size={17} color={COLORS.gold} />
+                  <Text style={styles.sectionLabel}>Tono cálido</Text>
+                </View>
+                <View style={styles.segmented}>
+                  {WARMTH_LEVELS.map(l => (
+                    <TouchableOpacity
+                      key={l.value}
+                      style={[styles.segment, warmth === l.value && styles.segmentActive]}
+                      onPress={() => useTabletStore.getState().setWarmth(l.value)}
+                    >
+                      <Text style={[styles.segmentText, warmth === l.value && styles.segmentTextActive]}>{l.label}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+
               <View style={styles.row2}>
-                <Toggle
-                  icon={<EyeIcon size={18} color={eyeComfort ? COLORS.background : COLORS.text} />}
-                  label="Protección vista"
-                  status={eyeComfort ? 'Tono cálido' : 'Desactivada'}
-                  active={eyeComfort}
-                  onPress={useTabletStore.getState().toggleEyeComfort}
-                />
                 <Toggle
                   icon={<RotateIcon size={18} color={autoRotate ? COLORS.background : COLORS.text} />}
                   label="Giro automático"
@@ -193,6 +176,15 @@ export default function InkTrickQuickMenu({ visible, onClose }: Props) {
                   active={autoRotate}
                   onPress={useTabletStore.getState().toggleAutoRotateInReader}
                 />
+                <View style={[styles.tile, styles.tileStatic, status.isMtpActive && styles.usbActive]}>
+                  <UsbIcon size={18} color={status.isUsbConnected ? COLORS.gold : COLORS.accent} />
+                  <View style={styles.cardText}>
+                    <Text style={styles.tileTitle}>Transferencia USB</Text>
+                    <Text style={[styles.cardSub, status.isMtpActive && { color: COLORS.gold }]} numberOfLines={1}>
+                      {usbSubtitle}
+                    </Text>
+                  </View>
+                </View>
               </View>
 
               <View style={styles.section}>
@@ -215,6 +207,24 @@ export default function InkTrickQuickMenu({ visible, onClose }: Props) {
                 </View>
               </View>
 
+              <View style={styles.section}>
+                <View style={styles.sectionTitleRow}>
+                  <MoonIcon size={17} color={COLORS.gold} />
+                  <Text style={styles.sectionLabel}>Pantalla de reposo</Text>
+                </View>
+                <View style={styles.segmented}>
+                  {SLEEP_MODES.map(m => (
+                    <TouchableOpacity
+                      key={m.value}
+                      style={[styles.segment, sleepMode === m.value && styles.segmentActive]}
+                      onPress={() => useTabletStore.getState().setSleepMode(m.value)}
+                    >
+                      <Text style={[styles.segmentText, sleepMode === m.value && styles.segmentTextActive]}>{m.label}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+
               <View style={styles.row2}>
                 <TouchableOpacity style={[styles.tile, !googleAccount && styles.dim]} onPress={openDrive} activeOpacity={0.7}>
                   <View style={styles.iconBox}>
@@ -227,28 +237,19 @@ export default function InkTrickQuickMenu({ visible, onClose }: Props) {
                     </Text>
                   </View>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.tile} onPress={openFiles} activeOpacity={0.7}>
+                <TouchableOpacity style={styles.tile} onPress={importBooks} activeOpacity={0.7}>
                   <View style={styles.iconBox}>
                     <FilesFolderIcon size={20} color={COLORS.gold} />
                   </View>
                   <View style={styles.cardText}>
-                    <Text style={styles.tileTitle}>Archivos</Text>
+                    <Text style={styles.tileTitle}>Importar libros</Text>
                     <Text style={styles.cardSub} numberOfLines={1}>
-                      Descargas y carpetas
+                      Desde Descargas
                     </Text>
                   </View>
                 </TouchableOpacity>
               </View>
 
-              <View style={[styles.card, styles.usb, status.isMtpActive && styles.usbActive]}>
-                <View style={styles.iconBox}>
-                  <UsbIcon size={20} color={status.isUsbConnected ? COLORS.gold : COLORS.accent} />
-                </View>
-                <View style={styles.cardText}>
-                  <Text style={styles.tileTitle}>Transferencia USB</Text>
-                  <Text style={[styles.cardSub, status.isMtpActive && { color: COLORS.gold }]}>{usbSubtitle}</Text>
-                </View>
-              </View>
             </ScrollView>
           )}
         </Pressable>
@@ -292,6 +293,21 @@ function ProfilePanel({ onBack }: { onBack: () => void }) {
   const cell = gridWidth > 0 ? { width: Math.floor((gridWidth - GRID_GAP * 3) / 4) } : null;
   const { setAvatar, setProfileName, refreshGoogleAccount } = useTabletStore.getState();
 
+  const googlePhotoUri = useTabletStore(s => s.googlePhotoUri);
+  const googleName = useTabletStore(s => s.googleName);
+  const [syncing, setSyncing] = useState(false);
+
+  const applyGooglePhoto = async () => {
+    setSyncing(true);
+    const result = await useTabletStore.getState().syncGoogleProfile(true);
+    setSyncing(false);
+    if (result === 'ok') {
+      if (useTabletStore.getState().googlePhotoUri) setAvatar('google');
+    } else if (result === 'error') {
+      Alert.alert('Foto de Google', 'No se pudo obtener tu foto de Google. Revisa la conexión Wi-Fi e inténtalo de nuevo.');
+    }
+  };
+
   const choosePhoto = async () => {
     const uri = await pickProfilePhoto();
     if (uri) setAvatar('photo', uri);
@@ -328,6 +344,23 @@ function ProfilePanel({ onBack }: { onBack: () => void }) {
         showsVerticalScrollIndicator={false}
         onLayout={e => setGridWidth(e.nativeEvent.layout.width)}
       >
+        {googleAccount ? (
+          <TouchableOpacity
+            style={[styles.avatarCell, cell, avatarId === 'google' && styles.avatarCellActive]}
+            onPress={googlePhotoUri ? () => setAvatar('google') : applyGooglePhoto}
+            accessibilityLabel="Foto de Google"
+          >
+            {googlePhotoUri ? (
+              <Image source={{ uri: googlePhotoUri }} style={styles.avatarImg} contentFit="cover" cachePolicy="memory" />
+            ) : (
+              <View style={styles.photoEmpty}>
+                {syncing ? <ActivityIndicator color={COLORS.gold} /> : <ImageIcon size={22} color={COLORS.gold} />}
+                <Text style={styles.photoText}>Google</Text>
+              </View>
+            )}
+            {avatarId === 'google' ? <Check /> : null}
+          </TouchableOpacity>
+        ) : null}
         <TouchableOpacity
           style={[styles.avatarCell, cell, avatarId === 'photo' && styles.avatarCellActive]}
           onPress={photoUri && avatarId !== 'photo' ? () => setAvatar('photo') : choosePhoto}
@@ -365,8 +398,11 @@ function ProfilePanel({ onBack }: { onBack: () => void }) {
             <Text style={styles.tileTitle} numberOfLines={1}>
               {googleAccount}
             </Text>
-            <Text style={styles.cardSub}>Para descargar libros desde Google Drive</Text>
+            <Text style={styles.cardSub}>{googleName ?? 'Para descargar libros desde Google Drive'}</Text>
           </View>
+          <TouchableOpacity onPress={applyGooglePhoto} disabled={syncing}>
+            <Text style={styles.link}>{googlePhotoUri ? 'Actualizar foto' : 'Usar su foto'}</Text>
+          </TouchableOpacity>
         </View>
       ) : (
         <TouchableOpacity

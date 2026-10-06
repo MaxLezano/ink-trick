@@ -38,11 +38,16 @@ interface StorageData {
 
 export interface TabletSettings {
   autoRotateInReader: boolean;
-  eyeComfort: boolean;
+  eyeComfort?: boolean; // Legacy on/off warm filter (replaced by warmth)
+  warmth?: number; // "Tono cálido" for the whole tablet: amber overlay opacity 0..0.3
   brightness?: number; // Slider position 0..1
   avatarId?: string; // An avatar of src/utils/avatars.ts, or 'photo'
   photoUri?: string; // Own profile photo (file:// in the app's files)
   profileName?: string;
+  sleepMode?: 'art' | 'book'; // Sleep screen: rotating screensavers or the current book's cover
+  googlePhotoUri?: string; // Google account photo (file:// in the app's files)
+  googleName?: string;
+  googleDeclined?: boolean; // The reader cancelled Google's consent: do not ask again by itself
 }
 
 export type StorageSnapshot = StorageData;
@@ -445,7 +450,7 @@ export async function replaceSnapshot(next: StorageSnapshot): Promise<void> {
 
 // ─── InkTrick OS (tablet) settings ──────────────────────────────────────────
 
-const DEFAULT_TABLET: TabletSettings = { autoRotateInReader: false, eyeComfort: false };
+const DEFAULT_TABLET: TabletSettings = { autoRotateInReader: false };
 
 export async function getTabletSettings(): Promise<TabletSettings> {
   const data = await readData();

@@ -48,6 +48,7 @@ import kotlin.math.min
 class SleepActivity : Activity() {
 
     private var bitmap: Bitmap? = null
+    private var coverBitmap: Bitmap? = null
     private lateinit var content: View
     private lateinit var batteryText: TextView
     private var downY = 0f
@@ -80,14 +81,32 @@ class SleepActivity : Activity() {
         setContentView(root)
         hideSystemBars()
 
+        // "Libro actual": the cover of the book being read over a faint screensaver.
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        val bookCover = prefs.getString("cover", null)?.takeIf { prefs.getString("mode", "art") == "book" }
+        val coverView = bookCover?.let { buildBook(prefs.getString("title", null), prefs.getInt("percentage", 0)) }
+        if (coverView != null) {
+            image.alpha = 0.22f
+            (content as FrameLayout).addView(coverView.first, 2, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT, Gravity.CENTER))
+        }
+
         // Decode off the UI thread at (about) the screen size: the screen is still off anyway.
         val metrics = resources.displayMetrics
         Thread {
             val bmp = loadScreensaver(min(metrics.widthPixels, metrics.heightPixels), max(metrics.widthPixels, metrics.heightPixels))
+            val cover = if (coverView != null) loadCover(bookCover, (shortSide() * COVER_WIDTH).toInt()) else null
             runOnUiThread {
-                if (isDestroyed) bmp?.recycle() else {
+                if (isDestroyed) {
+                    bmp?.recycle()
+                    cover?.recycle()
+                } else {
                     bitmap = bmp
                     image.setImageBitmap(bmp)
+                    if (cover != null) {
+                        coverBitmap = cover
+                        coverView!!.second.setImageBitmap(cover)
+                    } else coverView?.first?.visibility = View.GONE
+                    if (cover == null) image.alpha = 1f
                 }
             }
         }.start()
@@ -109,6 +128,8 @@ class SleepActivity : Activity() {
         super.onDestroy()
         bitmap?.recycle()
         bitmap = null
+        coverBitmap?.recycle()
+        coverBitmap = null
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -239,6 +260,60 @@ class SleepActivity : Activity() {
         }
     }
 
+    /** Cover + title + progress, centered. Returns the block and the cover's ImageView. */
+    private fun buildBook(title: String?, percentage: Int): Pair<View, ImageView> {
+        val width = (shortSide() * COVER_WIDTH).toInt()
+        val cover = ImageView(this).apply {
+            adjustViewBounds = true
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            elevation = dp(10f)
+            clipToOutline = true
+            outlineProvider = object : android.view.ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: android.graphics.Outline) =
+                    outline.setRoundRect(0, 0, view.width, view.height, dp(8f))
+            }
+        }
+        val titleView = TextView(this).apply {
+            text = title.orEmpty()
+            setTextColor(TEXT)
+            setTextSize(TypedValue.COMPLEX_UNIT_PX, shortSide() * 0.036f)
+            gravity = Gravity.CENTER
+            maxLines = 2
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setPadding(dp(32f).toInt(), dp(18f).toInt(), dp(32f).toInt(), 0)
+            visibility = if (title.isNullOrBlank()) View.GONE else View.VISIBLE
+        }
+        val progress = TextView(this).apply {
+            text = if (percentage > 0) "$percentage % leído" else ""
+            setTextColor(GOLD)
+            setTextSize(TypedValue.COMPLEX_UNIT_PX, shortSide() * 0.028f)
+            gravity = Gravity.CENTER
+            setPadding(0, dp(4f).toInt(), 0, 0)
+        }
+        val block = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            // Leave the clock above alone: the cover sits a bit below the center.
+            setPadding(0, (longSide() * 0.08f).toInt(), 0, 0)
+            addView(cover, LinearLayout.LayoutParams(width, WRAP_CONTENT))
+            addView(titleView)
+            addView(progress)
+        }
+        return block to cover
+    }
+
+    private fun loadCover(uri: String, reqW: Int): Bitmap? = try {
+        val parsed = android.net.Uri.parse(uri.substringBefore('?'))
+        val open = { if (parsed.scheme == "content") contentResolver.openInputStream(parsed) else java.io.FileInputStream(parsed.path ?: uri) }
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        open()?.use { BitmapFactory.decodeStream(it, null, bounds) }
+        var sample = 1
+        while (bounds.outWidth / (sample * 2) >= reqW) sample *= 2
+        open()?.use { BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample }) }
+    } catch (_: Exception) {
+        null
+    }
+
     private fun showBattery(intent: Intent) {
         val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
         val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, 100)
@@ -254,7 +329,7 @@ class SleepActivity : Activity() {
         return try {
             val names = assets.list(SCREENSAVER_DIR)?.filter { it.endsWith(".webp") }?.sorted().orEmpty()
             if (names.isEmpty()) return null
-            val prefs = getSharedPreferences("inktrick_sleep", MODE_PRIVATE)
+            val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
             val index = (prefs.getInt("next", 0) % names.size + names.size) % names.size
             prefs.edit().putInt("next", index + 1).apply()
             val path = "$SCREENSAVER_DIR/${names[index]}"
@@ -283,6 +358,8 @@ class SleepActivity : Activity() {
     private fun longSide() = max(resources.displayMetrics.widthPixels, resources.displayMetrics.heightPixels).toFloat()
 
     companion object {
+        const val PREFS = "inktrick_sleep"
+        private const val COVER_WIDTH = 0.46f
         private const val SCREENSAVER_DIR = "screensavers"
         private const val BG = 0xFF0A0A0A.toInt()
         private const val TEXT = 0xFFF0F0F0.toInt()
@@ -293,6 +370,9 @@ class SleepActivity : Activity() {
          * Android's own keyguard is still there). Registered once from [MainApplication].
          */
         fun install(app: Application) {
+            // A fresh process has no reader open: forget any book left by the previous one.
+            app.getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                .remove("bookId").remove("cover").remove("title").remove("percentage").apply()
             ContextCompat.registerReceiver(app, object : BroadcastReceiver() {
                 override fun onReceive(context: Context, intent: Intent) {
                     if (!KioskPolicy.isDeviceOwner(context)) return

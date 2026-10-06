@@ -1,5 +1,5 @@
 /**
- * The reader's avatar: an ink portrait from src/utils/avatars.ts or their own photo.
+ * The reader's avatar: an ink portrait from src/utils/avatars.ts, their own photo or their Google photo.
  */
 import React from 'react';
 import { StyleSheet } from 'react-native';
@@ -11,7 +11,13 @@ import { COLORS } from '../../utils/constants';
 export default function ProfileAvatar({ size, ring = true }: { size: number; ring?: boolean }) {
   const avatarId = useTabletStore(s => s.avatarId);
   const photoUri = useTabletStore(s => s.photoUri);
-  const source = avatarId === 'photo' && photoUri ? { uri: photoUri } : (findAvatar(avatarId) ?? DEFAULT_AVATAR).source;
+  const googlePhotoUri = useTabletStore(s => s.googlePhotoUri);
+  const source =
+    avatarId === 'photo' && photoUri
+      ? { uri: photoUri }
+      : avatarId === 'google' && googlePhotoUri
+        ? { uri: googlePhotoUri }
+        : (findAvatar(avatarId) ?? DEFAULT_AVATAR).source;
   return (
     <Image
       source={source}

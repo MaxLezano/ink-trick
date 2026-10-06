@@ -8,6 +8,8 @@
 #   .\setup-tablet.ps1 -Build           Fuerza compilar el APK antes de instalar
 #   .\setup-tablet.ps1 -Serial XXXX     Elige la tablet si hay varias conectadas
 #   .\setup-tablet.ps1 -Remove          Desactiva InkTrick OS (vuelve a Android normal)
+#   .\setup-tablet.ps1 -Kit             Arma dist\InkTrickOS (APK + este script) para
+#                                       provisionar tablets desde otra PC sin el proyecto
 #
 # Requisitos de Android para el modo dedicado (Device Owner):
 #   - Android 7 o superior.
@@ -19,14 +21,17 @@
 param(
     [string]$Serial,
     [switch]$Build,
-    [switch]$Remove
+    [switch]$Remove,
+    [switch]$Kit
 )
 
 $ErrorActionPreference = 'Continue'
 $Package = 'com.lezma.InkTrick'
 $Admin = "$Package/.AdminReceiver"
 $Receiver = "$Package/.KioskCommandReceiver"
-$ApkPath = Join-Path $PSScriptRoot 'android\app\build\outputs\apk\release\inkTrick.apk'
+# Inside the project the APK is built; in a kit (dist\InkTrickOS) it sits next to this script.
+$InProject = Test-Path (Join-Path $PSScriptRoot 'android\gradlew.bat')
+$ApkPath = if ($InProject) { Join-Path $PSScriptRoot 'android\app\build\outputs\apk\release\inkTrick.apk' } else { Join-Path $PSScriptRoot 'inkTrick.apk' }
 
 function Step($text) { Write-Host "`n$text" -ForegroundColor Yellow }
 function Ok($text) { Write-Host "  OK  $text" -ForegroundColor Green }
@@ -35,9 +40,53 @@ function Fail($text) { Write-Host "  XX  $text" -ForegroundColor Red; exit 1 }
 function Ask($text) { (Read-Host "  ?   $text (S/N)") -match '^[sSyY]' }
 function Shell([string]$cmd) { (& adb -s $script:Device shell $cmd 2>&1 | Out-String).Trim() }
 
+function Build-Apk([switch]$Force) {
+    if (-not $InProject) {
+        if (-not (Test-Path $ApkPath)) { Fail 'Falta inkTrick.apk junto a este script.' }
+        return
+    }
+    $stale = $true
+    if (Test-Path $ApkPath) {
+        $apkTime = (Get-Item $ApkPath).LastWriteTime
+        $newest = Get-ChildItem -Recurse -File (Join-Path $PSScriptRoot 'src'), (Join-Path $PSScriptRoot 'android\app\src'), (Join-Path $PSScriptRoot 'assets') |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        $stale = $newest.LastWriteTime -gt $apkTime
+    }
+    if ($Force -or $stale) {
+        Write-Host '  Compilando el APK (la primera vez tarda unos 10 minutos)...'
+        Push-Location (Join-Path $PSScriptRoot 'android')
+        & .\gradlew.bat assembleRelease --quiet
+        $code = $LASTEXITCODE
+        Pop-Location
+        if ($code -ne 0) { Fail 'Falló la compilación del APK.' }
+    }
+}
+
 Write-Host '=====================================================' -ForegroundColor Cyan
 Write-Host '   InkTrick OS - Lector dedicado para tablets        ' -ForegroundColor Cyan
 Write-Host '=====================================================' -ForegroundColor Cyan
+
+# --- Kit para otras PCs -----------------------------------------------------------
+if ($Kit) {
+    if (-not $InProject) { Fail '-Kit se usa desde la carpeta del proyecto.' }
+    Step 'Armando el kit de instalación...'
+    Build-Apk -Force:$Build
+    $out = Join-Path $PSScriptRoot 'dist\InkTrickOS'
+    New-Item -ItemType Directory -Force $out | Out-Null
+    Copy-Item $ApkPath (Join-Path $out 'inkTrick.apk') -Force
+    Copy-Item $PSCommandPath (Join-Path $out 'setup-tablet.ps1') -Force
+    Set-Content -Encoding UTF8 (Join-Path $out 'LEEME.txt') @'
+InkTrick OS - kit de instalación
+
+1. Instala Android Platform Tools (adb) y agrega su carpeta al PATH.
+2. En la tablet: Opciones de desarrollador > Depuración por USB. Sin cuentas ni PIN.
+3. Conéctala por USB y, en esta carpeta, ejecuta en PowerShell:
+     powershell -ExecutionPolicy Bypass -File .\setup-tablet.ps1
+Para desactivarlo: el mismo comando con -Remove.
+'@
+    Ok "Kit listo en $out"
+    exit 0
+}
 
 # --- adb y dispositivo --------------------------------------------------------
 if (-not (Get-Command adb -ErrorAction SilentlyContinue)) {
@@ -127,21 +176,7 @@ Ok 'Requisitos listos.'
 
 # --- APK -----------------------------------------------------------------------
 Step '[2/5] Preparando InkTrick...'
-$stale = $true
-if (Test-Path $ApkPath) {
-    $apkTime = (Get-Item $ApkPath).LastWriteTime
-    $newest = Get-ChildItem -Recurse -File (Join-Path $PSScriptRoot 'src'), (Join-Path $PSScriptRoot 'android\app\src'), (Join-Path $PSScriptRoot 'assets') |
-        Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    $stale = $newest.LastWriteTime -gt $apkTime
-}
-if ($Build -or $stale) {
-    Write-Host '  Compilando el APK (la primera vez tarda unos 10 minutos)...'
-    Push-Location (Join-Path $PSScriptRoot 'android')
-    & .\gradlew.bat assembleRelease --quiet
-    $code = $LASTEXITCODE
-    Pop-Location
-    if ($code -ne 0) { Fail 'Falló la compilación del APK.' }
-}
+Build-Apk -Force:$Build
 $install = (& adb -s $script:Device install -r -g $ApkPath 2>&1 | Out-String)
 if ($install -notmatch 'Success') {
     if ($install -match 'UPDATE_INCOMPATIBLE') {
@@ -178,6 +213,17 @@ Shell "dumpsys deviceidle whitelist +$Package" | Out-Null
 # Ubicación encendida: Android la exige para buscar redes Wi-Fi.
 if ($sdk -ge 29) { Shell 'settings put secure location_mode 3' | Out-Null }
 else { Shell 'settings put secure location_providers_allowed +network' | Out-Null }
+# La carpeta de libros: lo único que hace falta ver al conectar la tablet a la computadora.
+Shell 'mkdir -p /sdcard/InkTrick' | Out-Null
+$readme = New-TemporaryFile
+Set-Content -Encoding UTF8 $readme @'
+Copia aquí tus libros: PDF, EPUB, CBR o CBZ (puedes usar subcarpetas por serie).
+Aparecen en InkTrick al desconectar el cable.
+'@
+adb -s $script:Device push $readme '/sdcard/InkTrick/LEEME.txt' 2>&1 | Out-Null
+Remove-Item $readme
+# Android 9/10: que la carpeta aparezca ya en la computadora (MTP lee el índice multimedia).
+Shell 'am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file:///sdcard/InkTrick/LEEME.txt' | Out-Null
 Shell 'settings put global device_provisioned 1' | Out-Null
 Shell 'settings put secure user_setup_complete 1' | Out-Null
 Ok 'Sistema configurado.'
@@ -194,6 +240,8 @@ Write-Host '   Listo: la tablet ahora es un lector InkTrick' -ForegroundColor Gr
 Write-Host '=====================================================' -ForegroundColor Green
 Write-Host '  - Siempre en vertical (el lector puede girar con "Giro automático").'
 Write-Host '  - Al apagar la pantalla se muestra la pantalla de reposo de InkTrick.'
+Write-Host '  - Libros: cópialos a la carpeta InkTrick por USB, o en Drive usa "Abrir con" > InkTrick.'
+Write-Host '    La primera vez InkTrick te pide confirmar la carpeta (toca "Usar esta carpeta").'
 Write-Host '  - Wi-Fi, brillo, apagado de pantalla, Drive y USB: toca tu avatar.'
 Write-Host '  - Mantenimiento: mantén presionado "Ajustes rápidos" (Ajustes de Android o desactivar).'
 Write-Host '  - Para desactivarlo desde la computadora: .\setup-tablet.ps1 -Remove'

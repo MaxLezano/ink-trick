@@ -31,6 +31,14 @@ class MainActivity : ReactActivity() {
             }
         }
         KioskPolicy.applyOnce(this)
+        BookImporter.handleIntent(intent)
+    }
+
+    // Books shared from Drive / a file manager ("Abrir con InkTrick"). Handled before React sees
+    // the intent, so the content:// link never reaches the navigation.
+    override fun onNewIntent(intent: android.content.Intent) {
+        BookImporter.handleIntent(intent)
+        super.onNewIntent(intent)
     }
 
     private val rehideBars = Runnable { if (hasWindowFocus()) hideSystemBars() }

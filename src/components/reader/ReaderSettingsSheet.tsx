@@ -8,6 +8,7 @@ import { BookSettings, DoublePageMode, TextFont, TextTheme } from '../../utils/t
 import { COLORS } from '../../utils/constants';
 import { RefreshIcon } from '../Icons';
 import BrightnessSlider from '../os/BrightnessSlider';
+import { useTabletStore, WARMTH_LEVELS } from '../../store/tabletStore';
 
 interface Props {
   visible: boolean;
@@ -89,6 +90,9 @@ function matchesPreset(settings: BookSettings, values: PresetValues): boolean {
 }
 
 export default function ReaderSettingsSheet({ visible, settings, isComic, isEpub, onChange, onResetProgress, onClose }: Props) {
+  const isDeviceOwner = useTabletStore(s => s.isDeviceOwner);
+  // Tablet-wide, the same value as in quick settings.
+  const warmth = useTabletStore(s => s.warmth);
   const set = <K extends keyof BookSettings>(key: K, value: BookSettings[K]) => onChange({ ...settings, [key]: value });
 
   const activePreset = PRESETS.find(p => matchesPreset(settings, p.values))?.id;
@@ -256,13 +260,23 @@ export default function ReaderSettingsSheet({ visible, settings, isComic, isEpub
             onSelect={v => set('brightnessDimmer', v)}
           />
           <Segmented
+            label="Tono cálido"
+            hint="Menos luz azul para leer de noche"
+            choices={WARMTH_LEVELS}
+            value={warmth}
+            onSelect={v => useTabletStore.getState().setWarmth(v)}
+          />
+          <Segmented
             label="Pantalla completa"
             hint="Oculta la barra de navegación de Android"
             choices={onOff}
             value={settings.fullscreen ?? true}
             onSelect={v => set('fullscreen', v)}
           />
-          <Segmented label="Mantener pantalla encendida" choices={onOff} value={settings.keepAwake ?? true} onSelect={v => set('keepAwake', v)} />
+          {/* InkTrick OS: the screen timeout from quick settings applies while reading too. */}
+          {!isDeviceOwner && (
+            <Segmented label="Mantener pantalla encendida" choices={onOff} value={settings.keepAwake ?? true} onSelect={v => set('keepAwake', v)} />
+          )}
 
           <TouchableOpacity style={styles.resetBtn} onPress={onResetProgress}>
             <RefreshIcon size={16} color="#FFF" />

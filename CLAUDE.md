@@ -74,7 +74,8 @@ This file is the **only** project doc: keep it in sync whenever behavior changes
   Cómic (paged LTR) / Libro (paged, never double page); the active one is highlighted by color only.
   Options: scroll direction, paging, reading direction, fit (width / height / full), double page
   (off / auto in landscape / on; cover and wide pages stay single), auto crop, double-tap zoom,
-  tap-to-turn, dimmer (0–60%), fullscreen (hides the nav bar), keep awake.
+  tap-to-turn, dimmer (0–60%), warm tone ("Tono cálido": in InkTrick OS one tablet-wide value, see below), fullscreen (hides
+  the nav bar), keep awake.
 - New books inherit the last settings of the same series (collection name, else parent folder).
 - Pinch zoom up to 5x with focal point, pan with inertia, double tap zooms at the tapped point.
 - Last page → "Terminaste este tomo" card with a "Siguiente" button (next book of the series).
@@ -128,13 +129,37 @@ mode the app behaves like the regular app (free rotation, no status line). Test 
   people, animals, yōkai — in `assets/avatars/`, or own photo; name),
   battery, in-app Wi-Fi picker (`WifiPanel`: deprecated WifiManager APIs, allowed for device
   owners), brightness (`BrightnessSlider`, system setting via `dpm.setSystemSetting`, gamma 2.2,
-  saved on release; also in the reader settings), eye comfort (warm overlay in `App.tsx`),
+  saved on release; also in the reader settings), "Tono cálido" (one tablet-wide amber overlay in `App.tsx`, No/10/20/30 %, the same value
+  shown in the reader settings; not per book),
   reader auto-rotate, screen timeout, Drive, Files, USB status. Long-press "Ajustes rápidos"
   (1.5 s) opens Android settings outside lock task (Home returns).
 - Apps outside the lock task whitelist are launched after `stopLockTask`; whitelisted ones stay
   inside it. Native receivers in `TabletControlModule` only run while JS listens.
 - The app is rarely relaunched (it is the launcher), so the home screen sweeps temporary book files
   of closed readers on focus (`sweepReadingCache`).
+- **Library folder `/sdcard/InkTrick`** (created by the script, visible over USB; the only folder
+  a reader needs). Imports (`importService` + native `BookImporter`) only ever target the
+  enabled library folder named InkTrick (never Downloads: a "move" would copy a file onto itself),
+  connected once through the SAF picker opened at it. Sources: Drive / file managers "Abrir con" /
+  "Enviar a" (VIEW / SEND / SEND_MULTIPLE filters on MainActivity, handled natively before React
+  sees the intent) and "Importar libros" (multi-select picker in Downloads, moves). A file gets in
+  only with a book extension AND matching magic bytes (%PDF / PK / Rar!); same name + size is a
+  duplicate and never deletes the source. Android 11+ forbids granting Downloads as a SAF tree,
+  hence import instead of scanning it.
+- `useOsLibrarySync` (App.tsx): imports shared books, rescans when the USB cable is unplugged and
+  when the app returns after ≥ 20 s.
+- Sleep screen modes (`setSleepMode`): "Libro actual" (default) shows the cover + title + progress
+  of the book **open in the reader** (`setSleepBook` while mounted, `clearSleepBook(bookId)` on
+  unmount, id-checked for "Siguiente"); on the home screen it always shows the art. "Arte" never
+  shows books.
+- The reader never forces the screen on in InkTrick OS (the "Mantener pantalla encendida" row is
+  hidden): "Apagar pantalla tras" from quick settings applies everywhere; taps and volume-key
+  page turns count as activity. Outside OS mode keep-awake releases after 10 min without a turn.
+- Play Store is hidden by policy (`setApplicationHidden`: no update downloads, "free up space"
+  notifications or installs); maintenance (long-press "Ajustes rápidos") can show it, open
+  Android settings or turn InkTrick OS off. (A PIN for it was tried and removed: confusing.)
+- `setup-tablet.ps1 -Kit` builds `dist/InkTrickOS` (APK + script + LEEME) to provision tablets from
+  any PC without the project. Git Bash mangles `/sdcard/...` adb paths: `export MSYS_NO_PATHCONV=1`.
 - Screensaver art must leave the top third calm for the clock and must not contain text; check
   anatomy (the first koi had misplaced eyes; the current one was cleaned with OpenCV inpainting).
 - The reader sets its orientation on mount (no cleanup, see "Siguiente" gotcha); the home screen

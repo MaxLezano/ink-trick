@@ -3,7 +3,6 @@ package com.lezma.InkTrick
 import android.accounts.AccountManager
 import android.app.Activity
 import android.content.BroadcastReceiver
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -64,8 +63,12 @@ class TabletControlModule(reactContext: ReactApplicationContext) :
         }
     }
 
+    private var pickBooksPromise: Promise? = null
+    private var chooseAccountPromise: Promise? = null
+
     init {
         reactContext.addActivityEventListener(this)
+        BookImporter.onNewImports = { emit("onImportRequest", null) }
     }
 
     override fun getName(): String = "TabletControlModule"
@@ -127,6 +130,43 @@ class TabletControlModule(reactContext: ReactApplicationContext) :
             activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
         promise.resolve(ok)
+    }
+
+    @ReactMethod
+    fun isPlayStoreHidden(promise: Promise) = promise.resolve(KioskPolicy.isPlayStoreHidden(reactApplicationContext))
+
+    @ReactMethod
+    fun setPlayStoreHidden(hidden: Boolean, promise: Promise) =
+        promise.resolve(KioskPolicy.setPlayStoreHidden(reactApplicationContext, hidden))
+
+    /** Sleep screen content: "art" (rotating screensavers) or "book" (cover of the current book). */
+    @ReactMethod
+    fun setSleepMode(mode: String) {
+        reactApplicationContext.getSharedPreferences(SleepActivity.PREFS, Context.MODE_PRIVATE).edit()
+            .putString("mode", mode).apply()
+    }
+
+    /** The book open in the reader, for the "book" sleep screen. */
+    @ReactMethod
+    fun setSleepBook(bookId: String, coverUri: String?, title: String?, percentage: Double) {
+        reactApplicationContext.getSharedPreferences(SleepActivity.PREFS, Context.MODE_PRIVATE).edit()
+            .putString("bookId", bookId)
+            .putString("cover", coverUri)
+            .putString("title", title)
+            .putInt("percentage", percentage.roundToInt())
+            .apply()
+    }
+
+    /**
+     * The reader closed: the sleep screen goes back to the art. Only if [bookId] is still the one
+     * shown ("Siguiente" opens the next reader before the previous one closes).
+     */
+    @ReactMethod
+    fun clearSleepBook(bookId: String) {
+        val prefs = reactApplicationContext.getSharedPreferences(SleepActivity.PREFS, Context.MODE_PRIVATE)
+        if (prefs.getString("bookId", null) == bookId) {
+            prefs.edit().remove("bookId").remove("cover").remove("title").remove("percentage").apply()
+        }
     }
 
     /** Leaves lock task and opens Android settings (maintenance; Home brings InkTrick back). */
@@ -382,6 +422,43 @@ class TabletControlModule(reactContext: ReactApplicationContext) :
         }
     }
 
+    /**
+     * Name + photo of the Google account [email] (see [GoogleProfile]). Rejects with CANCELLED,
+     * NETWORK, TOKEN, HTTP or UNAUTHORIZED; the avatar simply stays as it is then.
+     */
+    @ReactMethod
+    fun fetchGoogleProfile(email: String, promise: Promise) {
+        val activity = reactApplicationContext.currentActivity ?: return promise.reject("NO_ACTIVITY", "No activity")
+        Thread {
+            try {
+                val profile = GoogleProfile.fetch(activity, email)
+                promise.resolve(Arguments.createMap().apply {
+                    putString("name", profile.name)
+                    putString("photoUri", profile.photoUri)
+                })
+            } catch (e: GoogleProfile.ProfileException) {
+                promise.reject(e.code, e.message)
+            } catch (e: Exception) {
+                promise.reject("ERROR", e.message)
+            }
+        }.start()
+    }
+
+    /** Android's account chooser (also grants this app visibility of the chosen account). */
+    @ReactMethod
+    fun chooseGoogleAccount(promise: Promise) {
+        val activity = reactApplicationContext.currentActivity ?: return promise.resolve(null)
+        try {
+            chooseAccountPromise = promise
+            @Suppress("DEPRECATION")
+            val intent = AccountManager.newChooseAccountIntent(null, null, arrayOf("com.google"), false, null, null, null, null)
+            activity.startActivityForResult(intent, CHOOSE_ACCOUNT)
+        } catch (_: Exception) {
+            chooseAccountPromise = null
+            promise.resolve(null)
+        }
+    }
+
     /** Google's own sign-in flow (Play services is whitelisted for lock task, no settings needed). */
     @ReactMethod
     fun addGoogleAccount(promise: Promise) {
@@ -404,25 +481,6 @@ class TabletControlModule(reactContext: ReactApplicationContext) :
         launch(activity, intent, promise)
     }
 
-    @ReactMethod
-    fun openFileManager(promise: Promise) {
-        val activity = reactApplicationContext.currentActivity ?: return promise.resolve(false)
-        val pm = activity.packageManager
-        val candidates = listOf(
-            Intent().setComponent(ComponentName("com.android.documentsui", "com.android.documentsui.files.FilesActivity")),
-            Intent().setComponent(ComponentName("com.google.android.documentsui", "com.android.documentsui.files.FilesActivity")),
-            pm.getLaunchIntentForPackage("com.google.android.apps.nbu.files"),
-            pm.getLaunchIntentForPackage("com.sec.android.app.myfiles"),
-            pm.getLaunchIntentForPackage("com.mi.android.globalFileexplorer"),
-            pm.getLaunchIntentForPackage("com.android.fileexplorer"),
-            pm.getLaunchIntentForPackage("com.transsion.filemanager"),
-            pm.getLaunchIntentForPackage("com.huawei.hidisk"),
-            Intent("android.intent.action.VIEW_DOWNLOADS"),
-        )
-        val intent = candidates.firstOrNull { it != null && it.resolveActivity(pm) != null } ?: return promise.resolve(false)
-        launch(activity, intent, promise)
-    }
-
     /** Starts another app; apps outside the lock task whitelist require leaving lock task first. */
     private fun launch(activity: Activity, intent: Intent, promise: Promise) {
         try {
@@ -434,6 +492,51 @@ class TabletControlModule(reactContext: ReactApplicationContext) :
         } catch (_: Exception) {
             promise.resolve(false)
         }
+    }
+
+    // ─── Book import (Drive "Abrir con", Downloads) ───────────────────────────
+
+    /** Books shared to InkTrick that JS has not handled yet. */
+    @ReactMethod
+    fun takePendingImports(promise: Promise) {
+        val array = Arguments.createArray()
+        BookImporter.takePending().forEach { array.pushString(it.toString()) }
+        promise.resolve(array)
+    }
+
+    /** Lets the reader pick books (several at once), starting in Downloads. */
+    @ReactMethod
+    fun pickBooksToImport(promise: Promise) {
+        val activity = reactApplicationContext.currentActivity ?: return promise.resolve(Arguments.createArray())
+        try {
+            pickBooksPromise = promise
+            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                type = "*/*"
+                putExtra(Intent.EXTRA_MIME_TYPES, BookImporter.BOOK_MIME_TYPES)
+                putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                addCategory(Intent.CATEGORY_OPENABLE)
+                putExtra(android.provider.DocumentsContract.EXTRA_INITIAL_URI,
+                    Uri.parse("content://com.android.externalstorage.documents/document/primary%3ADownload"))
+            }
+            activity.startActivityForResult(intent, PICK_BOOKS)
+        } catch (_: Exception) {
+            pickBooksPromise = null
+            promise.resolve(Arguments.createArray())
+        }
+    }
+
+    /** Validates and copies each book into the library folder [treeUri] (see [BookImporter]). */
+    @ReactMethod
+    fun importBooks(uris: ReadableArray, treeUri: String, move: Boolean, promise: Promise) {
+        Thread {
+            val results = Arguments.createArray()
+            val resolver = reactApplicationContext.contentResolver
+            for (i in 0 until uris.size()) {
+                val uri = Uri.parse(uris.getString(i) ?: continue)
+                results.pushMap(BookImporter.import(resolver, uri, Uri.parse(treeUri), move))
+            }
+            promise.resolve(results)
+        }.start()
     }
 
     // ─── Profile photo ────────────────────────────────────────────────────────
@@ -455,6 +558,24 @@ class TabletControlModule(reactContext: ReactApplicationContext) :
     }
 
     override fun onActivityResult(activity: Activity, requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode == CHOOSE_ACCOUNT) {
+            val promise = chooseAccountPromise ?: return
+            chooseAccountPromise = null
+            promise.resolve(if (resultCode == Activity.RESULT_OK) data?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME) else null)
+            return
+        }
+        if (requestCode == PICK_BOOKS) {
+            val promise = pickBooksPromise ?: return
+            pickBooksPromise = null
+            val array = Arguments.createArray()
+            if (resultCode == Activity.RESULT_OK && data != null) {
+                val clip = data.clipData
+                if (clip != null) for (i in 0 until clip.itemCount) array.pushString(clip.getItemAt(i).uri.toString())
+                else data.data?.let { array.pushString(it.toString()) }
+            }
+            promise.resolve(array)
+            return
+        }
         if (requestCode != PICK_PHOTO) return
         val promise = pickPhotoPromise ?: return
         pickPhotoPromise = null
@@ -490,6 +611,8 @@ class TabletControlModule(reactContext: ReactApplicationContext) :
 
     companion object {
         private const val PICK_PHOTO = 9002
+        private const val PICK_BOOKS = 9003
+        private const val CHOOSE_ACCOUNT = 9004
         private const val PHOTO_SIZE = 384
         private const val GAMMA = 2.2
 

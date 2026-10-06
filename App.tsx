@@ -7,7 +7,8 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import AppNavigator from './src/navigation/AppNavigator';
 import { useLibraryStore } from './src/store/libraryStore';
-import { useTabletStore } from './src/store/tabletStore';
+import { useTabletStore, WARM_TINT } from './src/store/tabletStore';
+import { useOsLibrarySync } from './src/components/os/useOsLibrarySync';
 import { AppState, StyleSheet, View } from 'react-native';
 import { clearReadingCache } from './src/services/bookCacheService';
 import { runAutoBackupIfDue } from './src/services/backupService';
@@ -17,9 +18,10 @@ import TourOverlay from './src/components/tour/TourOverlay';
 export default function App() {
   const loadLibrary = useLibraryStore(state => state.loadLibrary);
   const isLoaded = useLibraryStore(state => state.isLoaded);
-  const eyeComfort = useTabletStore(state => state.eyeComfort);
+  const warmth = useTabletStore(state => state.warmth);
   const loadTabletSettings = useTabletStore(state => state.loadSettings);
   const [showSplash, setShowSplash] = useState(true);
+  useOsLibrarySync();
 
   useEffect(() => {
     // Books are only decompressed while being read; drop anything left from a previous session.
@@ -42,16 +44,11 @@ export default function App() {
       <SafeAreaProvider>
         <AppNavigator />
         {showSplash ? <SplashScreen ready={isLoaded} onFinish={() => setShowSplash(false)} /> : <TourOverlay />}
-        {eyeComfort && (
+        {/* "Tono cálido" over every screen, reader included. */}
+        {warmth > 0 && (
           <View
             pointerEvents="none"
-            style={[
-              StyleSheet.absoluteFillObject,
-              {
-                backgroundColor: 'rgba(255, 160, 40, 0.16)',
-                zIndex: 99999,
-              },
-            ]}
+            style={[StyleSheet.absoluteFillObject, { backgroundColor: WARM_TINT, opacity: warmth, zIndex: 99999 }]}
           />
         )}
       </SafeAreaProvider>

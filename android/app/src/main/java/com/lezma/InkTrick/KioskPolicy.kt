@@ -21,7 +21,9 @@ object KioskPolicy {
     private const val PREFS = "inktrick_kiosk"
     private const val KEY_APPLIED = "applied_version"
     // Bump to force every device to re-apply the policies (and the wallpaper) after an update.
-    private const val POLICY_VERSION = 4
+    private const val POLICY_VERSION = 5
+    private const val KEY_PLAY_HIDDEN = "play_store_hidden"
+    private const val PLAY_STORE = "com.android.vending"
 
     /**
      * Packages allowed to run inside lock task mode: the SAF picker (adding folders, photo picker),
@@ -88,6 +90,9 @@ object KioskPolicy {
             }
             dpm.addPersistentPreferredActivity(admin, home, ComponentName(activity, MainActivity::class.java))
         }
+        // Play Store stays hidden unless maintenance shows it: no update downloads filling the
+        // storage, no "free up space" notifications, no way to install other apps.
+        safe { dpm.setApplicationHidden(admin, PLAY_STORE, prefs.getBoolean(KEY_PLAY_HIDDEN, true)) }
         Thread { WallpaperHelper.apply(activity.applicationContext) }.start()
         prefs.edit().putInt(KEY_APPLIED, POLICY_VERSION).apply()
     }
@@ -107,6 +112,7 @@ object KioskPolicy {
         safe { dpm.clearUserRestriction(admin, UserManager.DISALLOW_USER_SWITCH) }
         safe { dpm.clearUserRestriction(admin, UserManager.DISALLOW_ADD_USER) }
         safe { dpm.setLockTaskPackages(admin, arrayOf()) }
+        safe { dpm.setApplicationHidden(admin, PLAY_STORE, false) }
         safe {
             if (Settings.System.canWrite(context)) {
                 Settings.System.putInt(context.contentResolver, Settings.System.ACCELEROMETER_ROTATION, 1)
@@ -119,6 +125,15 @@ object KioskPolicy {
         } catch (_: Exception) {
             false
         }
+    }
+
+    fun isPlayStoreHidden(context: Context): Boolean =
+        try { dpm(context).isApplicationHidden(admin(context), PLAY_STORE) } catch (_: Exception) { false }
+
+    fun setPlayStoreHidden(context: Context, hidden: Boolean): Boolean {
+        if (!isDeviceOwner(context)) return false
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_PLAY_HIDDEN, hidden).apply()
+        return try { dpm(context).setApplicationHidden(admin(context), PLAY_STORE, hidden) } catch (_: Exception) { false }
     }
 
     fun onResume(activity: Activity) {

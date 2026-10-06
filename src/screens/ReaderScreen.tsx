@@ -44,7 +44,7 @@ import ReaderSettingsSheet from '../components/reader/ReaderSettingsSheet';
 import ReaderIndexSheet from '../components/reader/ReaderIndexSheet';
 import EpubReader, { chapterPositions, EpubLocation, EpubReaderHandle } from '../components/reader/EpubReader';
 import ReaderClock from '../components/reader/ReaderClock';
-import { setOrientation } from '../services/tabletControlService';
+import { clearSleepBook, setOrientation, setSleepBook } from '../services/tabletControlService';
 import { useTabletStore } from '../store/tabletStore';
 
 const { ReaderKeysModule } = NativeModules;
@@ -81,6 +81,8 @@ type LoadState =
   | { status: 'error'; message: string };
 
 const KEEP_AWAKE_TAG = 'inktrick-reader';
+// Screen-on while reading is released after this long without a page turn.
+const KEEP_AWAKE_IDLE_MS = 10 * 60 * 1000;
 
 // Gaps longer than this between two page turns are not counted as reading time.
 const MAX_IDLE_MS = 5 * 60 * 1000;
@@ -435,13 +437,28 @@ export default function ReaderScreen({ navigation, route }: Props) {
   }, [settings?.fullscreen]);
 
   // ─── Keep awake ──────────────────────────────────────────────────────────
+  // The screen stays on while reading, but not forever: after KEEP_AWAKE_IDLE_MS without turning a
+  // page (the reader fell asleep) the system timeout applies again; the next page turn re-arms it.
+  // InkTrick OS never forces it: the "Apagar pantalla tras" chosen in quick settings rules
+  // everywhere (every tap or volume-key page turn counts as activity).
+  const isDeviceOwner = useTabletStore(state => state.isDeviceOwner);
   useEffect(() => {
-    if (settings?.keepAwake === false) return;
+    if (settings?.keepAwake === false || isDeviceOwner) return;
     activateKeepAwakeAsync(KEEP_AWAKE_TAG).catch(() => {});
+    const idle = setTimeout(() => deactivateKeepAwake(KEEP_AWAKE_TAG).catch(() => {}), KEEP_AWAKE_IDLE_MS);
     return () => {
+      clearTimeout(idle);
       deactivateKeepAwake(KEEP_AWAKE_TAG).catch(() => {});
     };
-  }, [settings?.keepAwake]);
+  }, [settings?.keepAwake, currentPage, isDeviceOwner]);
+
+  // InkTrick OS sleep screen ("Libro actual"): cover, title and progress of this book, only while
+  // the reader is open (on the home screen the sleep screen shows the art).
+  const sleepPercent = totalPages > 0 ? Math.round(buildProgress(bookId, currentPage, totalPages).percentage) : 0;
+  useEffect(() => {
+    if (book) setSleepBook(bookId, book.coverUri, book.title, sleepPercent);
+  }, [bookId, book?.coverUri, book?.title, sleepPercent]);
+  useEffect(() => () => clearSleepBook(bookId), [bookId]);
 
   // ─── Actions ─────────────────────────────────────────────────────────────
   const goToPage = useCallback(

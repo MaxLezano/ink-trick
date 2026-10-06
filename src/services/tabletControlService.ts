@@ -71,15 +71,44 @@ export const forgetWifi = (ssid: string) => call<boolean>('forgetWifi', false, s
 
 export const getGoogleAccounts = () => call<string[]>('getGoogleAccounts', []);
 export const addGoogleAccount = () => call<boolean>('addGoogleAccount', false);
+/** Android's account picker; returns the chosen email or null. */
+export const chooseGoogleAccount = () => call<string | null>('chooseGoogleAccount', null);
+
+export type GoogleProfileResult = { name: string | null; photoUri: string | null } | { error: string };
+
+/** Name and photo of the Google account (Google's "Allow" screen appears the first time). */
+export async function fetchGoogleProfile(email: string): Promise<GoogleProfileResult> {
+  if (!Native?.fetchGoogleProfile) return { error: 'UNAVAILABLE' };
+  try {
+    return await Native.fetchGoogleProfile(email);
+  } catch (e: any) {
+    return { error: e?.code ?? 'ERROR' };
+  }
+}
 export const openGoogleDrive = () => call<boolean>('openGoogleDrive', false);
-export const openFileManager = () => call<boolean>('openFileManager', false);
 export const openAndroidSettings = () => call<boolean>('openAndroidSettings', false);
 /** Turns InkTrick OS off and gives up the device owner (the app can then be uninstalled). */
 export const releaseKiosk = () => call<boolean>('releaseKiosk', false);
+export const isPlayStoreHidden = () => call<boolean>('isPlayStoreHidden', false);
+export const setPlayStoreHidden = (hidden: boolean) => call<boolean>('setPlayStoreHidden', false, hidden);
+
+export function setSleepMode(mode: 'art' | 'book') {
+  Native?.setSleepMode?.(mode);
+}
+
+/** Tells the sleep screen which book is open in the reader (cover, title, progress). */
+export function setSleepBook(bookId: string, coverUri: string | undefined, title: string, percentage: number) {
+  Native?.setSleepBook?.(bookId, coverUri ?? null, title, percentage);
+}
+
+/** The reader closed: the sleep screen shows the art again (ignored if another book took over). */
+export function clearSleepBook(bookId: string) {
+  Native?.clearSleepBook?.(bookId);
+}
 /** Returns a file:// uri of a small square JPEG, or null if cancelled. */
 export const pickProfilePhoto = () => call<string | null>('pickProfilePhoto', null);
 
-type DeviceEvent = 'onDeviceStatusChanged' | 'onWifiScan' | 'onWifiAuthError';
+type DeviceEvent = 'onDeviceStatusChanged' | 'onWifiScan' | 'onWifiAuthError' | 'onImportRequest';
 
 /** Native receivers only run while there is at least one subscriber. */
 export function subscribe(event: DeviceEvent, callback: () => void): () => void {

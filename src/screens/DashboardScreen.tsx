@@ -56,6 +56,8 @@ import OsStatusBar from '../components/os/OsStatusBar';
 import ProfileAvatar from '../components/os/ProfileAvatar';
 import { setOrientation } from '../services/tabletControlService';
 import { sweepReadingCache } from '../services/bookCacheService';
+import { INKTRICK_FOLDER_URI } from '../services/importService';
+import { useTabletStore } from '../store/tabletStore';
 
 type Props = {
   navigation: StackNavigationProp<RootStackParamList, 'Dashboard'>;
@@ -91,6 +93,7 @@ export default function DashboardScreen({ navigation }: Props) {
   const [coverPageInput, setCoverPageInput] = useState('1');
   const [coverLoading, setCoverLoading] = useState(false);
   const [quickMenuVisible, setQuickMenuVisible] = useState(false);
+  const isDeviceOwner = useTabletStore(s => s.isDeviceOwner);
   // Reorder mode of a collection: working copy of the ids, saved with "Listo".
   const [reorderIds, setReorderIds] = useState<string[] | null>(null);
 
@@ -898,7 +901,7 @@ export default function DashboardScreen({ navigation }: Props) {
               <TouchableOpacity
                 style={[styles.outlineBtn, { flex: 1 }, isScanning && { opacity: 0.6 }]}
                 disabled={isScanning}
-                onPress={actions.addFolderAndIndex}
+                onPress={() => actions.addFolderAndIndex(isDeviceOwner ? INKTRICK_FOLDER_URI : undefined)}
               >
                 {isScanning ? <ActivityIndicator size="small" color={COLORS.accent} /> : <Text style={styles.outlineBtnText}>+ Agregar carpeta</Text>}
               </TouchableOpacity>
