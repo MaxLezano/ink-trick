@@ -10,6 +10,25 @@ import * as BookCache from '../services/bookCacheService';
 
 const normalizeUri = (uri: string) => uri.replace(/\/+$/, '');
 
+/** Storage path of a SAF tree uri ("primary:Libros/Anime"), to compare folders across uris. */
+function treePath(uri: string): string {
+  const raw = uri.split('/tree/')[1]?.split('/document/')[0] ?? uri;
+  try {
+    return decodeURIComponent(raw).replace(/\/+$/, '');
+  } catch {
+    return raw;
+  }
+}
+
+/** -1: `a` is inside `b`; 1: `a` contains `b`; 0: unrelated (or the same folder). */
+function nesting(a: string, b: string): -1 | 0 | 1 {
+  const pa = treePath(a);
+  const pb = treePath(b);
+  if (pa.startsWith(`${pb}/`)) return -1;
+  if (pb.startsWith(`${pa}/`)) return 1;
+  return 0;
+}
+
 /** True if the book lives inside the scanned folder (exact prefix, "Manga" ≠ "Manga2"). */
 export function belongsToFolder(book: BookFile, folderUri: string): boolean {
   const base = normalizeUri(folderUri);
@@ -235,8 +254,22 @@ export const useLibraryStore = create<LibraryStore>((set, get) => ({
     if (!directory) return;
 
     const folders = get().scannedFolders;
-    if (folders.some(f => normalizeUri(f.uri) === normalizeUri(directory.uri))) {
+    if (folders.some(f => normalizeUri(f.uri) === normalizeUri(directory.uri) || treePath(f.uri) === treePath(directory.uri))) {
       Alert.alert('Carpeta ya agregada', 'Esta carpeta ya se encuentra en tu lista de carpetas.');
+      return;
+    }
+    // Overlapping folders would list the same books twice.
+    const parent = folders.find(f => nesting(directory.uri, f.uri) === -1);
+    if (parent) {
+      Alert.alert('Carpeta ya incluida', `Esta carpeta está dentro de "${parent.name}", que ya está en tu biblioteca.`);
+      return;
+    }
+    const children = folders.filter(f => nesting(directory.uri, f.uri) === 1);
+    if (children.length > 0) {
+      Alert.alert(
+        'Carpeta superpuesta',
+        `Esta carpeta contiene ${children.map(c => `"${c.name}"`).join(', ')}, que ya ${children.length === 1 ? 'está' : 'están'} en tu biblioteca. Elige una de esas carpetas o una carpeta nueva.`,
+      );
       return;
     }
 

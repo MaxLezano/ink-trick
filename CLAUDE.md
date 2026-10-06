@@ -44,6 +44,8 @@ This file is the **only** project doc: keep it in sync whenever behavior changes
   read / unread, change cover (page number), move to collection (dismissable), remove from library
   (files stay on disk and are skipped by future scans).
 - Finished books show a gold hanko-style "LEÍDO" seal; favorites a filled wisteria-colored sakura.
+- Library folders cannot overlap (`nesting` in `libraryStore`): a folder inside or containing
+  another library folder would list its books twice.
 - Guided tour (`src/components/tour/`, ported from the user's GymBro app): dims the screen and
   spotlights one element at a time (gold ring) with a bubble (Atrás / Siguiente / Saltar). Two parts
   (`steps.ts`): **intro** = welcome + header buttons (folders, refresh, search, Mi lectura) and, in
